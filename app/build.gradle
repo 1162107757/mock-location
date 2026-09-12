@@ -1,0 +1,32 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "dev.drift.location"
+    compileSdk 36
+    buildToolsVersion "35.0.0"
+
+    defaultConfig {
+        applicationId "dev.drift.location"
+        minSdk 25
+        targetSdk 36
+        versionCode 13
+        versionName "0.9.0-location-history"
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    packaging {
+        resources {
+            merges += ["META-INF/xposed/*"]
+        }
+    }
+}
+
+dependencies {
+    compileOnly project(":xposed-stubs")
+}
