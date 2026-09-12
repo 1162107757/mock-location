@@ -72,6 +72,7 @@ public final class RootLocationHook implements IXposedHookLoadPackage {
     private static volatile ClassLoader targetClassLoader;
     private static volatile RootState pushedState = RootState.OFF;
     private static volatile long pushedStateAt;
+    private static volatile int tencentCoordinateType = 1; // Tencent SDK defaults to GCJ-02.
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam loadPackageParam) {
@@ -408,6 +409,19 @@ public final class RootLocationHook implements IXposedHookLoadPackage {
     private static void hookManagerClass(Class<?> managerClass, ClassLoader classLoader) {
         if (!HOOKED_TENCENT_MANAGERS.add(managerClass)) return;
 
+        XposedBridge.hookAllMethods(managerClass, "setCoordinateType", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                if (param.args == null || param.args.length == 0
+                        || !(param.args[0] instanceof Integer)) return;
+                int requestedType = (Integer) param.args[0];
+                if (requestedType == 0 || requestedType == 1) {
+                    tencentCoordinateType = requestedType;
+                }
+            }
+        });
+        hookResult(managerClass, "getCoordinateType", state -> tencentCoordinateType);
+
         XC_MethodHook requestHook = new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
@@ -667,8 +681,9 @@ public final class RootLocationHook implements IXposedHookLoadPackage {
     }
 
     private static Object fakeLocationValue(String methodName, Class<?> returnType, RootState state) {
-        if ("getLatitude".equals(methodName)) return state.latitude;
-        if ("getLongitude".equals(methodName)) return state.longitude;
+        CoordinateTransform.Coordinate coordinate = tencentCoordinate(state);
+        if ("getLatitude".equals(methodName)) return coordinate.latitude;
+        if ("getLongitude".equals(methodName)) return coordinate.longitude;
         if ("getAltitude".equals(methodName)) return 12.0d;
         if ("getAccuracy".equals(methodName)) return 5.0f;
         if ("getSpeed".equals(methodName)) return state.speed;
@@ -678,7 +693,7 @@ public final class RootLocationHook implements IXposedHookLoadPackage {
         if ("getElapsedRealtimeNanos".equals(methodName)) return SystemClock.elapsedRealtimeNanos();
         if ("getElapsedRealtime".equals(methodName)) return SystemClock.elapsedRealtime();
         if ("getDirection".equals(methodName)) return (double) state.bearing;
-        if ("getCoordinateType".equals(methodName)) return 0; // WGS84, same as the map input.
+        if ("getCoordinateType".equals(methodName)) return tencentCoordinateType;
         if ("isMockGps".equals(methodName)) return 0;
         if (methodName.startsWith("isMock") || "isFromMockProvider".equals(methodName)) return false;
         if (methodName.startsWith("has")) return true;
@@ -697,8 +712,8 @@ public final class RootLocationHook implements IXposedHookLoadPackage {
     private static void hookTencentGetterClass(Class<?> locationClass) {
         for (Class<?> type = locationClass; type != null && type != Object.class; type = type.getSuperclass()) {
             if (!HOOKED_TENCENT_CLASSES.add(type)) continue;
-            hookResult(type, "getLatitude", state -> state.latitude);
-            hookResult(type, "getLongitude", state -> state.longitude);
+            hookResult(type, "getLatitude", state -> tencentCoordinate(state).latitude);
+            hookResult(type, "getLongitude", state -> tencentCoordinate(state).longitude);
             hookResult(type, "getAltitude", state -> 12.0d);
             hookResult(type, "getAccuracy", state -> 5.0f);
             hookResult(type, "getSpeed", state -> state.speed);
@@ -707,12 +722,19 @@ public final class RootLocationHook implements IXposedHookLoadPackage {
             hookResult(type, "getTime", state -> System.currentTimeMillis());
             hookResult(type, "getElapsedRealtimeNanos", state -> SystemClock.elapsedRealtimeNanos());
             hookResult(type, "getElapsedRealtime", state -> SystemClock.elapsedRealtime());
-            hookResult(type, "getCoordinateType", state -> 0);
+            hookResult(type, "getCoordinateType", state -> tencentCoordinateType);
             hookResult(type, "getDirection", state -> (double) state.bearing);
             hookResult(type, "isMockGps", state -> 0);
             hookResult(type, "isMock", state -> false);
             hookResult(type, "isFromMockProvider", state -> false);
         }
+    }
+
+    private static CoordinateTransform.Coordinate tencentCoordinate(RootState state) {
+        if (tencentCoordinateType == 1) {
+            return CoordinateTransform.wgs84ToGcj02(state.latitude, state.longitude);
+        }
+        return new CoordinateTransform.Coordinate(state.latitude, state.longitude);
     }
 
     private static void hookResult(Class<?> type, String methodName, StateValue value) {

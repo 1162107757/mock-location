@@ -17,6 +17,7 @@ import android.graphics.drawable.GradientDrawable;
 import android.location.Location;
 import android.location.LocationListener;
 import android.location.LocationManager;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -38,15 +39,16 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import org.json.JSONArray;
-import org.json.JSONObject;
+import com.amap.api.maps.MapsInitializer;
+import com.amap.api.services.core.AMapException;
+import com.amap.api.services.core.LatLonPoint;
+import com.amap.api.services.core.PoiItem;
+import com.amap.api.services.core.ServiceSettings;
+import com.amap.api.services.poisearch.PoiResult;
+import com.amap.api.services.poisearch.PoiSearch;
 
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -67,13 +69,23 @@ public final class MainActivity extends Activity {
     private static final int COLOR_SUBTLE = Color.rgb(148, 163, 184);
     private static final int COLOR_ACCENT = Color.rgb(34, 197, 94);
     private static final int COLOR_DANGER = Color.rgb(239, 68, 68);
+    private static final int COLOR_DIALOG_SURFACE = Color.WHITE;
+    private static final int COLOR_DIALOG_BUTTON = Color.rgb(241, 245, 249);
+    private static final int COLOR_DIALOG_BORDER = Color.rgb(203, 213, 225);
+    private static final int COLOR_DIALOG_TEXT = Color.rgb(15, 23, 42);
+    private static final int COLOR_DIALOG_SUBTLE = Color.rgb(71, 85, 105);
+    private static final int MAP_UPDATE_DELAY_SECONDS = 3;
+    private static final long MAP_UPDATE_DELAY_MS = MAP_UPDATE_DELAY_SECONDS * 1_000L;
+    private static final String MAP_PREFERENCES = "amap_configuration";
+    private static final String KEY_AMAP_PRIVACY_AGREED = "privacy_agreed";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
 
     private SharedPreferences preferences;
+    private SharedPreferences mapPreferences;
     private LocationHistoryStore historyStore;
-    private MapCanvasView mapView;
+    private AmapMapView mapView;
     private EditText searchInput;
     private TextView coordinateText;
     private TextView statusText;
@@ -92,13 +104,22 @@ public final class MainActivity extends Activity {
     private String selectedPlaceName = "";
     private double selectedPlaceLatitude = Double.NaN;
     private double selectedPlaceLongitude = Double.NaN;
-    private long lastServiceUpdate;
+    private String amapApiKey = "";
+    private boolean interfaceInitialized;
+    private PoiSearch activePoiSearch;
+    private Runnable pendingMapCommitTask;
+    private Runnable pendingMapCountdownTask;
+    private double pendingMapLatitude;
+    private double pendingMapLongitude;
+    private double lastMapCenterLatitude = Double.NaN;
+    private double lastMapCenterLongitude = Double.NaN;
 
     private final BroadcastReceiver stateReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
             if (!LocationContract.ACTION_STATE.equals(intent.getAction())) return;
             running = intent.getBooleanExtra(LocationContract.EXTRA_RUNNING, false);
+            if (!running) cancelPendingMapLocationUpdate();
             String message = intent.getStringExtra(LocationContract.EXTRA_MESSAGE);
             if (running && mapView != null) {
                 historyStore.record(
@@ -119,13 +140,71 @@ public final class MainActivity extends Activity {
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
 
         preferences = LocationContract.openPreferences(this);
+        mapPreferences = getSharedPreferences(MAP_PREFERENCES, MODE_PRIVATE);
         historyStore = new LocationHistoryStore(this);
         locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
         running = preferences.getBoolean(LocationContract.KEY_RUNNING, false);
         rootOnly = preferences.getBoolean(LocationContract.KEY_ROOT_ONLY, false);
         rootGranted = false;
 
+        beginAmapSetup(savedInstanceState);
+    }
+
+    private void beginAmapSetup(Bundle savedInstanceState) {
+        MapsInitializer.updatePrivacyShow(this, true, true);
+        ServiceSettings.updatePrivacyShow(this, true, true);
+        if (mapPreferences.getBoolean(KEY_AMAP_PRIVACY_AGREED, false)) {
+            MapsInitializer.updatePrivacyAgree(this, true);
+            ServiceSettings.updatePrivacyAgree(this, true);
+            continueAmapSetup(savedInstanceState);
+            return;
+        }
+        AlertDialog privacyDialog = new AlertDialog.Builder(this)
+                .setTitle("高德地图服务说明")
+                .setMessage("地图显示和地点搜索由高德开放平台 SDK 提供。使用时，高德 SDK 会按照其隐私权政策处理网络、设备及粗略位置信息。点击“同意并继续”后才会初始化地图。")
+                .setNegativeButton("退出", null)
+                .setNeutralButton("查看高德隐私政策", null)
+                .setPositiveButton("同意并继续", null)
+                .create();
+        privacyDialog.setOnShowListener(ignored -> {
+            privacyDialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(view -> {
+                privacyDialog.dismiss();
+                finish();
+            });
+            privacyDialog.getButton(AlertDialog.BUTTON_NEUTRAL)
+                    .setOnClickListener(view -> openAmapPrivacyPolicy());
+            privacyDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                    mapPreferences.edit().putBoolean(KEY_AMAP_PRIVACY_AGREED, true).apply();
+                    MapsInitializer.updatePrivacyAgree(this, true);
+                    ServiceSettings.updatePrivacyAgree(this, true);
+                    privacyDialog.dismiss();
+                    continueAmapSetup(savedInstanceState);
+            });
+        });
+        privacyDialog.setOnCancelListener(dialog -> finish());
+        privacyDialog.show();
+    }
+
+    private void continueAmapSetup(Bundle savedInstanceState) {
+        amapApiKey = AmapKeyStore.get(this);
+        if (amapApiKey.isEmpty()) {
+            showAmapKeyDialog(true, savedInstanceState);
+            return;
+        }
+        configureAmapSdk();
+        initializeInterface(savedInstanceState);
+    }
+
+    private void configureAmapSdk() {
+        MapsInitializer.setApiKey(amapApiKey);
+        ServiceSettings.getInstance().setApiKey(amapApiKey);
+    }
+
+    private void initializeInterface(Bundle savedInstanceState) {
+        if (interfaceInitialized) return;
+        interfaceInitialized = true;
         setContentView(buildInterface());
+        mapView.onCreate(savedInstanceState);
         registerStateReceiver();
 
         double latitude = readDoublePreference(LocationContract.KEY_LATITUDE, LocationContract.DEFAULT_LATITUDE);
@@ -135,19 +214,87 @@ public final class MainActivity extends Activity {
         checkRootAccess(false);
     }
 
+    private void showAmapKeyDialog(boolean required, Bundle savedInstanceState) {
+        EditText keyField = new EditText(this);
+        keyField.setSingleLine(true);
+        keyField.setHint("32 位高德 Android Key");
+        keyField.setSelectAllOnFocus(true);
+        keyField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        keyField.setPadding(dp(24), dp(8), dp(24), dp(8));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle(required ? "配置高德地图 Key" : "高德地图设置")
+                .setMessage("Key 必须绑定包名 dev.drift.location，并包含当前安装包的调试版 SHA-1。保存后应用会重新加载地图。")
+                .setView(keyField)
+                .setNegativeButton(required ? "退出" : "取消", null)
+                .setNeutralButton("申请 Key", null)
+                .setPositiveButton("保存", null)
+                .create();
+        dialog.setCanceledOnTouchOutside(!required);
+        dialog.setOnCancelListener(ignored -> {
+            if (required) finish();
+        });
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(view -> {
+                dialog.dismiss();
+                if (required) finish();
+            });
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> openAmapKeyConsole());
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                String key = keyField.getText().toString().trim();
+                if (!key.matches("[0-9A-Za-z]{32}")) {
+                    keyField.setError("请输入完整的 32 位高德 Android Key");
+                    return;
+                }
+                if (!AmapKeyStore.save(this, key)) {
+                    keyField.setError("Key 保存失败，请重试");
+                    return;
+                }
+                amapApiKey = key;
+                dialog.dismiss();
+                if (interfaceInitialized) {
+                    recreate();
+                } else {
+                    configureAmapSdk();
+                    initializeInterface(savedInstanceState);
+                }
+            });
+        });
+        dialog.show();
+    }
+
+    private void openAmapPrivacyPolicy() {
+        openWebPage("https://lbs.amap.com/pages/privacy/");
+    }
+
+    private void openAmapKeyConsole() {
+        openWebPage("https://console.amap.com/dev/key/app");
+    }
+
+    private void openWebPage(String url) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
+        } catch (RuntimeException exception) {
+            Toast.makeText(this, "无法打开浏览器", Toast.LENGTH_SHORT).show();
+        }
+    }
+
     private View buildInterface() {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(COLOR_BACKGROUND);
 
-        mapView = new MapCanvasView(this);
+        mapView = new AmapMapView(this);
         mapView.setOnCenterChangedListener((latitude, longitude) -> {
+            boolean centerChanged = !Double.isFinite(lastMapCenterLatitude)
+                    || Math.abs(latitude - lastMapCenterLatitude) > 0.000001d
+                    || Math.abs(longitude - lastMapCenterLongitude) > 0.000001d;
+            if (centerChanged) {
+                lastMapCenterLatitude = latitude;
+                lastMapCenterLongitude = longitude;
+            }
             if (!matchesSelectedPlace(latitude, longitude)) selectedPlaceName = "";
             coordinateText.setText(formatCoordinate(latitude, longitude));
-            writeCoordinatePreferences(latitude, longitude);
-            if (running && System.currentTimeMillis() - lastServiceUpdate > 120L) {
-                sendServiceAction(LocationContract.ACTION_UPDATE);
-                lastServiceUpdate = System.currentTimeMillis();
-            }
+            if (centerChanged) scheduleMapLocationUpdate(latitude, longitude);
         });
         root.addView(mapView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -277,14 +424,20 @@ public final class MainActivity extends Activity {
         locationRow.addView(statusText);
         panel.addView(locationRow);
 
+        LinearLayout utilityRow = new LinearLayout(this);
+        utilityRow.setOrientation(LinearLayout.HORIZONTAL);
         Button historyButton = createCompactButton("历史位置", "查看模拟过的位置");
         historyButton.setOnClickListener(view -> showHistoryDialog());
-        LinearLayout.LayoutParams historyParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(42)
-        );
-        historyParams.topMargin = dp(12);
-        panel.addView(historyButton, historyParams);
+        utilityRow.addView(historyButton, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        Button mapSettingsButton = createCompactButton("地图设置", "配置高德地图 Key");
+        mapSettingsButton.setOnClickListener(view -> showAmapKeyDialog(false, null));
+        LinearLayout.LayoutParams mapSettingsParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
+        mapSettingsParams.leftMargin = dp(8);
+        utilityRow.addView(mapSettingsButton, mapSettingsParams);
+        LinearLayout.LayoutParams utilityParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
+        utilityParams.topMargin = dp(12);
+        panel.addView(utilityRow, utilityParams);
 
         LinearLayout actionRow = new LinearLayout(this);
         actionRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -298,6 +451,7 @@ public final class MainActivity extends Activity {
         startButton = createActionButton("开始模拟", COLOR_ACCENT, COLOR_BACKGROUND);
         startButton.setOnClickListener(view -> {
             if (running) {
+                cancelPendingMapLocationUpdate();
                 sendServiceAction(LocationContract.ACTION_STOP);
             } else {
                 beginStartFlow();
@@ -660,6 +814,69 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void scheduleMapLocationUpdate(double latitude, double longitude) {
+        if (!running) {
+            cancelPendingMapLocationUpdate();
+            writeCoordinatePreferences(latitude, longitude);
+            return;
+        }
+
+        pendingMapLatitude = latitude;
+        pendingMapLongitude = longitude;
+        cancelPendingMapLocationUpdate();
+
+        Runnable countdownTask = new Runnable() {
+            private int secondsRemaining = MAP_UPDATE_DELAY_SECONDS;
+
+            @Override
+            public void run() {
+                if (pendingMapCountdownTask != this || pendingMapCommitTask == null || !running) return;
+                renderLocationUpdateCountdown(secondsRemaining);
+                if (secondsRemaining > 1) {
+                    secondsRemaining--;
+                    mainHandler.postDelayed(this, 1_000L);
+                }
+            }
+        };
+        Runnable commitTask = new Runnable() {
+            @Override
+            public void run() {
+                if (pendingMapCommitTask != this) return;
+                pendingMapCommitTask = null;
+                if (pendingMapCountdownTask == countdownTask) {
+                    mainHandler.removeCallbacks(pendingMapCountdownTask);
+                    pendingMapCountdownTask = null;
+                }
+                if (!running) return;
+                writeCoordinatePreferences(pendingMapLatitude, pendingMapLongitude);
+                sendServiceAction(LocationContract.ACTION_UPDATE);
+                renderState(null);
+            }
+        };
+        pendingMapCommitTask = commitTask;
+        pendingMapCountdownTask = countdownTask;
+        mainHandler.post(countdownTask);
+        mainHandler.postDelayed(commitTask, MAP_UPDATE_DELAY_MS);
+    }
+
+    private void renderLocationUpdateCountdown(int secondsRemaining) {
+        if (statusText == null) return;
+        statusText.setText("● " + secondsRemaining + "秒后更新到此地址");
+        statusText.setTextColor(COLOR_ACCENT);
+        statusText.setBackground(rounded(0x3322C55E, 14, COLOR_ACCENT, 1));
+    }
+
+    private void cancelPendingMapLocationUpdate() {
+        if (pendingMapCommitTask != null) {
+            mainHandler.removeCallbacks(pendingMapCommitTask);
+            pendingMapCommitTask = null;
+        }
+        if (pendingMapCountdownTask != null) {
+            mainHandler.removeCallbacks(pendingMapCountdownTask);
+            pendingMapCountdownTask = null;
+        }
+    }
+
     private void showHistoryDialog() {
         List<LocationHistoryStore.Entry> entries = historyStore.getEntries();
         if (entries.isEmpty()) {
@@ -668,9 +885,11 @@ public final class MainActivity extends Activity {
         }
 
         ScrollView scrollView = new ScrollView(this);
+        scrollView.setBackgroundColor(COLOR_DIALOG_SURFACE);
         LinearLayout list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
         list.setPadding(dp(12), dp(8), dp(12), dp(8));
+        list.setBackgroundColor(COLOR_DIALOG_SURFACE);
         scrollView.addView(list, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -683,12 +902,12 @@ public final class MainActivity extends Activity {
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
             row.setPadding(dp(12), dp(8), dp(8), dp(8));
-            row.setBackground(rounded(COLOR_MUTED, 12, COLOR_BORDER, 1));
+            row.setBackground(rounded(COLOR_DIALOG_SURFACE, 12, COLOR_DIALOG_BORDER, 1));
 
             LinearLayout labels = new LinearLayout(this);
             labels.setOrientation(LinearLayout.VERTICAL);
             String title = entry.name.isEmpty() ? "固定位置" : entry.name;
-            labels.addView(label(title, 14, COLOR_TEXT, Typeface.BOLD));
+            labels.addView(label(title, 14, COLOR_DIALOG_TEXT, Typeface.BOLD));
             String detail = String.format(
                     Locale.US,
                     "%.6f, %.6f  ·  %s",
@@ -696,7 +915,7 @@ public final class MainActivity extends Activity {
                     entry.longitude,
                     timeFormat.format(new Date(entry.usedAt))
             );
-            labels.addView(label(detail, 11, COLOR_SUBTLE, Typeface.NORMAL));
+            labels.addView(label(detail, 11, COLOR_DIALOG_SUBTLE, Typeface.NORMAL));
             row.addView(labels, new LinearLayout.LayoutParams(
                     0,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -704,6 +923,8 @@ public final class MainActivity extends Activity {
             ));
 
             Button useButton = createCompactButton("使用", "使用这个历史位置");
+            useButton.setTextColor(COLOR_DIALOG_TEXT);
+            useButton.setBackground(rounded(COLOR_DIALOG_BUTTON, 12, COLOR_DIALOG_BORDER, 1));
             useButton.setOnClickListener(view -> {
                 selectHistoryEntry(entry);
                 if (dialogHolder[0] != null) dialogHolder[0].dismiss();
@@ -714,6 +935,7 @@ public final class MainActivity extends Activity {
 
             Button deleteButton = createCompactButton("删除", "删除这个历史位置");
             deleteButton.setTextColor(COLOR_DANGER);
+            deleteButton.setBackground(rounded(Color.rgb(254, 242, 242), 12, Color.rgb(254, 202, 202), 1));
             deleteButton.setOnClickListener(view -> {
                 historyStore.delete(entry.id);
                 if (dialogHolder[0] != null) dialogHolder[0].dismiss();
@@ -784,43 +1006,48 @@ public final class MainActivity extends Activity {
         }
         searchInput.setEnabled(false);
         searchInput.setHint("正在搜索…");
-        networkExecutor.execute(() -> {
-            HttpURLConnection connection = null;
-            try {
-                String encoded = URLEncoder.encode(query, StandardCharsets.UTF_8.name());
-                URL url = new URL("https://photon.komoot.io/api/?q=" + encoded + "&limit=5&lang=zh");
-                connection = (HttpURLConnection) url.openConnection();
-                connection.setConnectTimeout(8000);
-                connection.setReadTimeout(8000);
-                connection.setRequestProperty("User-Agent", "DriftLocation/0.1 (Android location testing tool)");
-                StringBuilder body = new StringBuilder();
-                try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
-                    String line;
-                    while ((line = reader.readLine()) != null) body.append(line);
-                }
-                JSONArray json = new JSONObject(body.toString()).getJSONArray("features");
-                List<SearchResult> results = new ArrayList<>();
-                for (int index = 0; index < json.length(); index++) {
-                    JSONObject item = json.getJSONObject(index);
-                    JSONObject properties = item.getJSONObject("properties");
-                    JSONArray coordinates = item.getJSONObject("geometry").getJSONArray("coordinates");
-                    results.add(new SearchResult(
-                            photonDisplayName(properties, query),
-                            coordinates.getDouble(1),
-                            coordinates.getDouble(0)
-                    ));
-                }
-                mainHandler.post(() -> showSearchResults(results));
-            } catch (Exception exception) {
-                mainHandler.post(() -> Toast.makeText(this, "搜索失败，请检查网络或直接输入坐标", Toast.LENGTH_LONG).show());
-            } finally {
-                if (connection != null) connection.disconnect();
-                mainHandler.post(() -> {
+        try {
+            PoiSearch.Query poiQuery = new PoiSearch.Query(query, "", "");
+            poiQuery.setPageSize(10);
+            poiQuery.setPageNum(1);
+            activePoiSearch = new PoiSearch(this, poiQuery);
+            activePoiSearch.setOnPoiSearchListener(new PoiSearch.OnPoiSearchListener() {
+                @Override
+                public void onPoiSearched(PoiResult poiResult, int errorCode) {
                     searchInput.setEnabled(true);
                     searchInput.setHint("搜索城市、街道或地点");
-                });
-            }
-        });
+                    if (errorCode != AMapException.CODE_AMAP_SUCCESS || poiResult == null) {
+                        Toast.makeText(MainActivity.this,
+                                "高德搜索失败（" + errorCode + "），请检查 Key 或网络",
+                                Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    List<SearchResult> results = new ArrayList<>();
+                    for (PoiItem item : poiResult.getPois()) {
+                        LatLonPoint point = item.getLatLonPoint();
+                        if (point == null) continue;
+                        CoordinateTransform.Coordinate wgs84 = CoordinateTransform.gcj02ToWgs84(
+                                point.getLatitude(), point.getLongitude());
+                        results.add(new SearchResult(
+                                amapPoiDisplayName(item, query),
+                                wgs84.latitude,
+                                wgs84.longitude
+                        ));
+                    }
+                    showSearchResults(results);
+                }
+
+                @Override
+                public void onPoiItemSearched(PoiItem poiItem, int errorCode) {
+                    // This screen performs keyword searches only.
+                }
+            });
+            activePoiSearch.searchPOIAsyn();
+        } catch (AMapException exception) {
+            searchInput.setEnabled(true);
+            searchInput.setHint("搜索城市、街道或地点");
+            Toast.makeText(this, "无法启动高德搜索：" + exception.getErrorMessage(), Toast.LENGTH_LONG).show();
+        }
     }
 
     private void showSearchResults(List<SearchResult> results) {
@@ -900,15 +1127,30 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (mapView != null) mapView.onResume();
         if (setupButton != null) {
             setupButton.setText(rootOnly && rootGranted ? "Root 模式已配置" : (rootGranted ? "启用 Root 模式" : "申请 Root"));
         }
     }
 
     @Override
+    protected void onPause() {
+        if (mapView != null) mapView.onPause();
+        super.onPause();
+    }
+
+    @Override
+    protected void onSaveInstanceState(Bundle outState) {
+        if (mapView != null) mapView.onSaveInstanceState(outState);
+        super.onSaveInstanceState(outState);
+    }
+
+    @Override
     protected void onDestroy() {
+        cancelPendingMapLocationUpdate();
         finishLocationRequest();
-        unregisterReceiver(stateReceiver);
+        if (interfaceInitialized) unregisterReceiver(stateReceiver);
+        if (mapView != null) mapView.onDestroy();
         networkExecutor.shutdownNow();
         super.onDestroy();
     }
@@ -972,13 +1214,13 @@ public final class MainActivity extends Activity {
         return comma > 0 ? name.substring(0, comma) : name;
     }
 
-    private static String photonDisplayName(JSONObject properties, String fallback) {
-        String[] keys = {"name", "city", "state", "country"};
+    private static String amapPoiDisplayName(PoiItem item, String fallback) {
         StringBuilder result = new StringBuilder();
-        for (String key : keys) {
-            String value = properties.optString(key, "").trim();
+        String[] parts = {item.getTitle(), item.getSnippet(), item.getCityName(), item.getAdName()};
+        for (String part : parts) {
+            String value = part == null ? "" : part.trim();
             if (value.isEmpty() || result.toString().contains(value)) continue;
-            if (result.length() > 0) result.append(", ");
+            if (result.length() > 0) result.append(" · ");
             result.append(value);
         }
         return result.length() == 0 ? fallback : result.toString();

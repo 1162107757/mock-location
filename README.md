@@ -4,7 +4,8 @@ Drift Location 是一个面向 Android 开发和测试场景的固定位置工�
 
 ## 当前功能
 
-- OpenStreetMap 地图拖动选点、双指缩放和按钮缩放
+- 高德原生地图拖动选点、双指缩放和按钮缩放
+- 高德地点搜索，国内网络环境下快速加载
 - 一键定位到设备真实当前位置，并自动放大到街区级别
 - 地点搜索，以及离线手动输入经纬度
 - Android 官方 Mock Location API，无需 Root
@@ -53,6 +54,8 @@ Root 模式不需要在开发者选项中选择模拟位置应用。点击开始
 
 生成的调试 APK 位于 `app/build/outputs/apk/debug/app-debug.apk`。
 
+高德地图内置了一个默认 Android Key。也可以在应用底部的“地图设置”中更换 Key；用户输入的 Key 会使用 Android Keystore 加密保存在本机，不会在设置页面回显。
+
 Android 7.1.2 使用兼容分支启动普通前台服务、构建旧版通知、注册广播和提交测试定位；Android 8.0 及以上使用通知渠道与新版前台服务 API。
 
 Root 模式点击“申请 Root”后会执行 `su -c id`，只有确认返回 `uid=0` 才会启用 Root 固定位置模式。首次点击“开始模拟”时，应用会通过 AppOps 自动配置模拟位置权限。
@@ -63,4 +66,4 @@ Root 模式点击“申请 Root”后会执行 `su -c id`，只有确认返回 `
 
 Root 模式先通过 Root 配置系统模拟位置权限，再由前台服务创建 Android Test Provider 并持续提交同一个 `Location`。位置速度固定为 0；LSPosed 模块仍可在 Android 7.1.2 的系统分发层和目标进程中替换完整位置对象。当前版本不会修改 IP、Wi-Fi、蜂窝基站或原始 GNSS 数据。
 
-地图瓦片来自 OpenStreetMap 德国社区服务器，地点搜索使用 Photon。两者运行时均需要网络，地图界面会显示 OpenStreetMap 署名。
+地图选点、历史记录和 Android `Location` 始终保存 WGS-84 坐标。高德地图和搜索结果使用 GCJ-02，仅在地图边界双向转换。腾讯定位 SDK 默认请求 GCJ-02 时，目标进程兼容钩子只在返回腾讯坐标的边界执行 WGS-84 → GCJ-02 转换；如果目标应用明确请求 WGS-84，则保持原坐标。中国大陆以外不执行偏移转换。
