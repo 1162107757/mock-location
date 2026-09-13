@@ -45,8 +45,13 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONObject;
+
 import java.io.BufferedReader;
+import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -78,6 +83,10 @@ public final class MainActivity extends Activity {
     private static final String MAP_PREFERENCES = "amap_configuration";
     private static final String KEY_AMAP_PRIVACY_AGREED = "privacy_agreed";
     private static final String KEY_DISCLAIMER_AGREED = "disclaimer_v1_agreed";
+    private static final String UPDATE_MANIFEST_URL =
+            "https://raw.githubusercontent.com/1162107757/mock-location/master/update.json";
+    private static final int UPDATE_TIMEOUT_MS = 8_000;
+    private static final int UPDATE_MAX_BYTES = 256 * 1024;
 
     private static final String DISCLAIMER_TEXT =
             "请在使用本软件前仔细阅读本说明。点击“同意并继续”，表示你已经阅读、理解并同意以下内容。\n\n"
@@ -316,6 +325,7 @@ public final class MainActivity extends Activity {
         mapView.setCenter(latitude, longitude);
         renderState(running ? "正在模拟位置" : "准备就绪");
         checkRootAccess(false);
+        scheduleAutomaticUpdateCheck();
     }
 
     private void showAmapKeyDialog(boolean required, Bundle savedInstanceState) {
@@ -353,6 +363,16 @@ public final class MainActivity extends Activity {
             disclaimerParams.topMargin = dp(10);
             keyForm.addView(disclaimerButton, disclaimerParams);
             disclaimerButton.setTag("disclaimer_review");
+
+            Button aboutButton = createCompactButton("关于与更新", "查看版本并检查更新");
+            aboutButton.setTextColor(COLOR_DIALOG_TEXT);
+            aboutButton.setBackground(rounded(COLOR_DIALOG_SURFACE, 10,
+                    COLOR_DIALOG_BORDER, 1));
+            LinearLayout.LayoutParams aboutParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
+            aboutParams.topMargin = dp(8);
+            keyForm.addView(aboutButton, aboutParams);
+            aboutButton.setTag("about_review");
         }
 
         AlertDialog dialog = new AlertDialog.Builder(this)
@@ -374,6 +394,13 @@ public final class MainActivity extends Activity {
                     disclaimerView.setOnClickListener(view -> {
                         dialog.dismiss();
                         showDisclaimerDialog(null, false);
+                    });
+                }
+                View aboutView = keyForm.findViewWithTag("about_review");
+                if (aboutView != null) {
+                    aboutView.setOnClickListener(view -> {
+                        dialog.dismiss();
+                        showAboutDialog();
                     });
                 }
             }
@@ -423,6 +450,271 @@ public final class MainActivity extends Activity {
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
         } catch (RuntimeException exception) {
             Toast.makeText(this, "无法打开浏览器", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void showAboutDialog() {
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(22), dp(6), dp(22), dp(2));
+        content.setBackgroundColor(COLOR_DIALOG_SURFACE);
+
+        TextView versionText = label("Drift Location\n版本 " + BuildConfig.VERSION_NAME
+                + "（versionCode " + BuildConfig.VERSION_CODE + "）\n适配 Android 7.1.2 - Android 16",
+                15, COLOR_DIALOG_TEXT, Typeface.BOLD);
+        versionText.setLineSpacing(dp(3), 1f);
+        content.addView(versionText, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView updateStatus = label("点击“检查更新”获取最新版本信息", 13,
+                COLOR_DIALOG_SUBTLE, Typeface.NORMAL);
+        updateStatus.setPadding(0, dp(14), 0, dp(4));
+        content.addView(updateStatus, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("关于与更新")
+                .setView(content)
+                .setNegativeButton("关闭", null)
+                .setPositiveButton("检查更新", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(view -> checkForUpdates(dialog, updateStatus)));
+        dialog.show();
+    }
+
+    private void scheduleAutomaticUpdateCheck() {
+        long lastCheck = mapPreferences.getLong("last_update_check_at", 0L);
+        long now = System.currentTimeMillis();
+        if (now - lastCheck < 24L * 60L * 60L * 1_000L) return;
+        mapPreferences.edit().putLong("last_update_check_at", now).apply();
+        mainHandler.postDelayed(() -> performUpdateCheck(null, null, true), 1_500L);
+    }
+
+    private void checkForUpdates(AlertDialog dialog, TextView statusView) {
+        if (statusView != null) statusView.setText("正在检查更新…");
+        if (dialog != null) dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+        performUpdateCheck(dialog, statusView, false);
+    }
+
+    private void performUpdateCheck(AlertDialog dialog, TextView statusView, boolean automatic) {
+        networkExecutor.execute(() -> {
+            UpdateInfo update = fetchUpdateInfo();
+            mainHandler.post(() -> {
+                if (dialog != null) dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+                if (update == null) {
+                    if (!automatic && statusView != null) {
+                        statusView.setText("暂未获取到更新，请检查网络或更新清单地址");
+                    }
+                    return;
+                }
+                if (update.versionCode <= BuildConfig.VERSION_CODE) {
+                    if (!automatic && statusView != null) {
+                        statusView.setText("当前已是最新版本（" + BuildConfig.VERSION_NAME + "）");
+                    }
+                    return;
+                }
+                if (statusView != null) {
+                    statusView.setText("发现新版本：" + update.versionName);
+                }
+                if (!isFinishing()) showUpdateDialog(update);
+            });
+        });
+    }
+
+    private UpdateInfo fetchUpdateInfo() {
+        HttpURLConnection connection = null;
+        try {
+            connection = (HttpURLConnection) new URL(UPDATE_MANIFEST_URL).openConnection();
+            connection.setConnectTimeout(UPDATE_TIMEOUT_MS);
+            connection.setReadTimeout(UPDATE_TIMEOUT_MS);
+            connection.setInstanceFollowRedirects(true);
+            connection.setRequestProperty("Accept", "application/json");
+            connection.setRequestProperty("User-Agent", "DriftLocation/" + BuildConfig.VERSION_NAME);
+            int responseCode = connection.getResponseCode();
+            if (responseCode < 200 || responseCode >= 300) return null;
+            try (InputStream stream = connection.getInputStream();
+                 BufferedReader reader = new BufferedReader(new InputStreamReader(stream, "UTF-8"))) {
+                StringBuilder body = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    body.append(line).append('\n');
+                    if (body.length() > UPDATE_MAX_BYTES) return null;
+                }
+                JSONObject json = new JSONObject(body.toString());
+                int versionCode = json.optInt("versionCode", -1);
+                String versionName = json.optString("versionName", "").trim();
+                String downloadUrl = json.optString("downloadUrl", "").trim();
+                String notes = json.optString("releaseNotes",
+                        json.optString("content", "")).trim();
+                if (versionCode < 0 || versionName.isEmpty()) return null;
+                return new UpdateInfo(versionCode, versionName, downloadUrl, notes);
+            }
+        } catch (Exception exception) {
+            Log.w(LOG_TAG, "检查更新失败", exception);
+            return null;
+        } finally {
+            if (connection != null) connection.disconnect();
+        }
+    }
+
+    private void showUpdateDialog(UpdateInfo update) {
+        StringBuilder message = new StringBuilder()
+                .append("发现新版本 ").append(update.versionName)
+                .append("（versionCode ").append(update.versionCode).append("）");
+        if (!update.releaseNotes.isEmpty()) {
+            message.append("\n\n更新内容：\n").append(update.releaseNotes);
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("有新版本可用")
+                .setMessage(message.toString())
+                .setNegativeButton("稍后", null)
+                .setPositiveButton("打开下载页", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(view -> {
+                    if (update.downloadUrl.isEmpty()) {
+                        Toast.makeText(this, "更新清单未配置下载地址", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    openWebPage(update.downloadUrl);
+                    dialog.dismiss();
+                }));
+        dialog.show();
+    }
+
+    private void showLocationDiagnostics() {
+        TextView report = label(buildDiagnosticsText(), 14, COLOR_DIALOG_TEXT, Typeface.NORMAL);
+        report.setLineSpacing(dp(3), 1f);
+        report.setTextIsSelectable(true);
+        report.setPadding(dp(4), dp(4), dp(4), dp(8));
+
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.setBackgroundColor(COLOR_DIALOG_SURFACE);
+        scrollView.addView(report, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("定位诊断")
+                .setView(scrollView)
+                .setNegativeButton("关闭", null)
+                .setNeutralButton("系统定位设置", null)
+                .setPositiveButton("刷新", null)
+                .create();
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL)
+                    .setOnClickListener(view -> openSystemLocationSettings());
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                    .setOnClickListener(view -> report.setText(buildDiagnosticsText()));
+        });
+        dialog.show();
+    }
+
+    private String buildDiagnosticsText() {
+        StringBuilder report = new StringBuilder();
+        report.append("应用\n")
+                .append("版本：").append(BuildConfig.VERSION_NAME).append("\n")
+                .append("包名：").append(getPackageName()).append("\n\n");
+        report.append("系统\n")
+                .append("Android：").append(Build.VERSION.RELEASE)
+                .append("（API ").append(Build.VERSION.SDK_INT).append("）\n")
+                .append("设备：").append(Build.MANUFACTURER).append(' ').append(Build.MODEL).append("\n")
+                .append("系统定位开关：").append(locationSwitchState()).append("\n\n");
+
+        report.append("授权\n")
+                .append("精确定位权限：").append(permissionState(Manifest.permission.ACCESS_FINE_LOCATION)).append("\n")
+                .append("粗略定位权限：").append(permissionState(Manifest.permission.ACCESS_COARSE_LOCATION)).append("\n")
+                .append("Mock Location AppOp：").append(mockLocationAppOpState()).append("\n")
+                .append("Root 权限：").append(rootGranted ? "已获得" : "未检测到或尚未检测").append("\n")
+                .append("Root 模式：").append(rootOnly ? "已启用" : "未启用").append("\n\n");
+
+        report.append("定位源\n")
+                .append("GPS：").append(providerState(LocationManager.GPS_PROVIDER)).append("\n")
+                .append("网络：").append(providerState(LocationManager.NETWORK_PROVIDER)).append("\n");
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            report.append("fused：").append(providerState("fused")).append("\n");
+        } else {
+            report.append("fused：Android 7 兼容模式已跳过\n");
+        }
+        report.append("被动：").append(providerState(LocationManager.PASSIVE_PROVIDER)).append("\n\n");
+
+        report.append("应用状态\n")
+                .append("模拟状态：").append(running ? "运行中" : "未运行").append("\n")
+                .append("高德 JS API：")
+                .append(!amapJsApiKey.isEmpty() && !amapJsSecurityCode.isEmpty() ? "已配置" : "未配置")
+                .append("\n")
+                .append("免责说明：")
+                .append(mapPreferences.getBoolean(KEY_DISCLAIMER_AGREED, false) ? "已确认" : "未确认");
+        return report.toString();
+    }
+
+    private String permissionState(String permission) {
+        try {
+            return checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED ? "已授予" : "未授予";
+        } catch (RuntimeException exception) {
+            return "读取失败";
+        }
+    }
+
+    private String locationSwitchState() {
+        if (locationManager == null) return "服务不可用";
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                return locationManager.isLocationEnabled() ? "已开启" : "已关闭";
+            }
+            return locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
+                    || locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
+                    ? "已开启" : "已关闭";
+        } catch (RuntimeException exception) {
+            return "读取失败";
+        }
+    }
+
+    private String mockLocationAppOpState() {
+        try {
+            AppOpsManager manager = (AppOpsManager) getSystemService(APP_OPS_SERVICE);
+            if (manager == null) return "服务不可用";
+            int mode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                    ? manager.unsafeCheckOpNoThrow(AppOpsManager.OPSTR_MOCK_LOCATION,
+                    android.os.Process.myUid(), getPackageName())
+                    : manager.checkOpNoThrow(AppOpsManager.OPSTR_MOCK_LOCATION,
+                    android.os.Process.myUid(), getPackageName());
+            if (mode == AppOpsManager.MODE_ALLOWED) return "已允许";
+            if (mode == AppOpsManager.MODE_IGNORED) return "已忽略";
+            if (mode == AppOpsManager.MODE_ERRORED) return "被拒绝";
+            return "未设置";
+        } catch (RuntimeException exception) {
+            return "读取失败";
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private String providerState(String provider) {
+        if (locationManager == null) return "服务不可用";
+        try {
+            if (!locationManager.isProviderEnabled(provider)) return "关闭";
+            Location last = locationManager.getLastKnownLocation(provider);
+            if (last == null) return "开启 · 无缓存";
+            return "开启 · " + (isMockLocation(last) ? "模拟" : "真实/未标记")
+                    + " · " + formatLocationAge(last.getTime());
+        } catch (RuntimeException exception) {
+            return "不可用";
+        }
+    }
+
+    private String formatLocationAge(long timestamp) {
+        long age = System.currentTimeMillis() - timestamp;
+        if (age < 0 || age < 1_000L) return "刚刚";
+        if (age < 60_000L) return (age / 1_000L) + " 秒前";
+        if (age < 3_600_000L) return (age / 60_000L) + " 分钟前";
+        return (age / 3_600_000L) + " 小时前";
+    }
+
+    private void openSystemLocationSettings() {
+        try {
+            startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS));
+        } catch (RuntimeException exception) {
+            startActivity(new Intent(Settings.ACTION_SETTINGS));
         }
     }
 
@@ -589,6 +881,8 @@ public final class MainActivity extends Activity {
         statusText = label("", 13, COLOR_SUBTLE, Typeface.BOLD);
         statusText.setGravity(Gravity.CENTER);
         statusText.setPadding(dp(12), dp(8), dp(12), dp(8));
+        statusText.setContentDescription("查看定位诊断");
+        statusText.setOnClickListener(view -> showLocationDiagnostics());
         locationRow.addView(statusText);
         panel.addView(locationRow);
 
@@ -1454,6 +1748,20 @@ public final class MainActivity extends Activity {
             this.name = name;
             this.latitude = latitude;
             this.longitude = longitude;
+        }
+    }
+
+    private static final class UpdateInfo {
+        final int versionCode;
+        final String versionName;
+        final String downloadUrl;
+        final String releaseNotes;
+
+        UpdateInfo(int versionCode, String versionName, String downloadUrl, String releaseNotes) {
+            this.versionCode = versionCode;
+            this.versionName = versionName;
+            this.downloadUrl = downloadUrl;
+            this.releaseNotes = releaseNotes;
         }
     }
 }
