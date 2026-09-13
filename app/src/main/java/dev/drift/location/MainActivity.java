@@ -6,6 +6,8 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.AppOpsManager;
 import android.content.BroadcastReceiver;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -504,8 +506,9 @@ public final class MainActivity extends Activity {
         if (!rootOnly && !isSelectedMockLocationApp()) {
             new AlertDialog.Builder(this)
                     .setTitle("需要完成一次系统设置")
-                    .setMessage("请在开发者选项中找到“选择模拟位置信息应用”，然后选择 Drift Location。返回后即可开始。")
+                    .setMessage("可以在开发者选项中选择 Drift Location，也可以在连接设备的电脑上执行 ADB 授权命令。授权后返回本应用即可开始。")
                     .setNegativeButton("稍后", null)
+                    .setNeutralButton("ADB 无 Root", (dialog, which) -> showAdbAuthorizationDialog())
                     .setPositiveButton("打开设置", (dialog, which) -> openDeveloperSettings())
                     .show();
             return;
@@ -535,9 +538,9 @@ public final class MainActivity extends Activity {
         String action = !rootGranted ? "申请 Root 权限" : (rootOnly ? "关闭 Root 模式" : "启用 Root 模式");
         new AlertDialog.Builder(this)
                 .setTitle("Root 增强 · " + state)
-                .setMessage("Root 固定位置模式会自动授予 Mock Location 权限，并持续向 GPS、网络和 fused 通道提交同一个坐标，速度固定为 0。无需在开发者选项中手动选择应用。")
+                .setMessage("Root 固定位置模式会自动授予 Mock Location 权限，并持续向 GPS、网络和 fused 通道提交同一个坐标，速度固定为 0。也可以使用 ADB 无 Root 授权，只需在连接设备的电脑上执行一条命令。")
                 .setNegativeButton("取消", null)
-                .setNeutralButton("普通模式设置", (dialog, which) -> openDeveloperSettings())
+                .setNeutralButton("ADB 无 Root", (dialog, which) -> showAdbAuthorizationDialog())
                 .setPositiveButton(action, (dialog, which) -> {
                     if (!rootGranted) {
                         requestRootAccess();
@@ -552,6 +555,40 @@ public final class MainActivity extends Activity {
                     renderState(rootOnly ? "Root 增强已启用" : "已切换到普通模式");
                 })
                 .show();
+    }
+
+    private void showAdbAuthorizationDialog() {
+        String packageName = getPackageName();
+        String command = "adb shell appops set " + packageName + " android:mock_location allow";
+        boolean authorized = isSelectedMockLocationApp();
+        String message;
+        if (authorized) {
+            message = "当前应用已经获得系统模拟位置授权，可以直接点击“开始模拟”。\n\n如需在另一台设备授权，可执行：\n" + command;
+        } else {
+            message = "适用于 Android 7–16 的无 Root 授权方式：\n\n"
+                    + "1. 打开设备 USB 调试，并让电脑上的 adb 识别设备。\n"
+                    + "2. 在电脑终端执行：\n" + command + "\n"
+                    + "3. 返回本应用后再次点击“开始模拟”。\n\n"
+                    + "此方式只授予本应用 Mock Location AppOp，不会修改 Root 权限。";
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("ADB 无 Root 授权")
+                .setMessage(message)
+                .setNegativeButton("关闭", null)
+                .setNeutralButton("打开开发者设置", null)
+                .setPositiveButton("复制命令", null)
+                .create();
+        dialog.setOnShowListener(ignored -> {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> openDeveloperSettings());
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                if (clipboard != null) {
+                    clipboard.setPrimaryClip(ClipData.newPlainText("Drift Location ADB 授权命令", command));
+                    Toast.makeText(this, "命令已复制，请粘贴到电脑终端执行", Toast.LENGTH_LONG).show();
+                }
+            });
+        });
+        dialog.show();
     }
 
     private void requestRootAccess() {
@@ -836,7 +873,17 @@ public final class MainActivity extends Activity {
         startButton.setText(running ? "停止模拟" : "开始模拟");
         startButton.setTextColor(running ? Color.WHITE : COLOR_BACKGROUND);
         startButton.setBackground(rounded(running ? COLOR_DANGER : COLOR_ACCENT, 15, Color.TRANSPARENT, 0));
-        setupButton.setText(rootOnly && rootGranted ? "Root 模式已配置" : (rootGranted ? "启用 Root 模式" : "申请 Root"));
+        String setupLabel;
+        if (rootOnly && rootGranted) {
+            setupLabel = "Root 模式已配置";
+        } else if (rootGranted) {
+            setupLabel = "启用 Root 模式";
+        } else if (isSelectedMockLocationApp()) {
+            setupLabel = "系统位置已授权";
+        } else {
+            setupLabel = "授权设置";
+        }
+        setupButton.setText(setupLabel);
         if (message != null && (message.startsWith("无法") || message.startsWith("未获得") || message.startsWith("模拟失败"))) {
             Toast.makeText(this, message, Toast.LENGTH_LONG).show();
         }
@@ -1116,7 +1163,7 @@ public final class MainActivity extends Activity {
         super.onResume();
         if (mapView != null) mapView.onResume();
         if (setupButton != null) {
-            setupButton.setText(rootOnly && rootGranted ? "Root 模式已配置" : (rootGranted ? "启用 Root 模式" : "申请 Root"));
+            renderState(null);
         }
     }
 

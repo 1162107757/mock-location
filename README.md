@@ -38,6 +38,22 @@ Root 模式不需要在开发者选项中选择模拟位置应用。点击开始
 
 如果设备还没有显示开发者选项，请先进入“关于手机”，连续点击版本号以启用。
 
+## ADB 无 Root 模式
+
+Android 7–16 可以通过 ADB 授予当前应用模拟位置 AppOp，不需要 Root，也不需要在设置页面手动选择应用。打开设备 USB 调试并连接电脑后，在项目目录执行：
+
+```powershell
+.\tools\adb-grant-mock-location.ps1
+```
+
+也可以在应用的“授权设置”中复制命令手动执行。授权后返回应用，点击“开始模拟”即可。撤销授权时执行：
+
+```powershell
+.\tools\adb-grant-mock-location.ps1 -Revoke
+```
+
+Android 11 及以上也可以使用 Shizuku 通过无线调试完成同一项 AppOp 授权；Android 7–10 需要 USB ADB 或电脑连接。
+
 ## 构建
 
 项目需要 JDK 17+、Android SDK 36 和 Gradle 8.7+，APK 最低支持 Android 7.1.2（API 25）：
