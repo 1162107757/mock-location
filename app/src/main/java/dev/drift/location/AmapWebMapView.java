@@ -38,6 +38,24 @@ final class AmapWebMapView extends FrameLayout {
         void onSearchFailed(String message);
     }
 
+    interface OnMapTapListener {
+        void onMapTap(double latitude, double longitude);
+    }
+
+    interface OnDrawPathListener {
+        void onDrawPath(List<RoutePoint> points);
+    }
+
+    static final class RoutePoint {
+        final double latitude;
+        final double longitude;
+
+        RoutePoint(double latitude, double longitude) {
+            this.latitude = latitude;
+            this.longitude = longitude;
+        }
+    }
+
     private final WebView webView;
     private final CenterCrosshairView crosshairView;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
@@ -45,12 +63,16 @@ final class AmapWebMapView extends FrameLayout {
     private final String securityCode;
     private OnCenterChangedListener centerChangedListener;
     private OnSearchResultListener searchResultListener;
+    private OnMapTapListener mapTapListener;
+    private OnDrawPathListener drawPathListener;
     private double centerLatitude = LocationContract.DEFAULT_LATITUDE;
     private double centerLongitude = LocationContract.DEFAULT_LONGITUDE;
     private float zoom = 13f;
     private boolean created;
     private boolean mapReady;
     private boolean destroyed;
+    private String pendingRouteJson;
+    private boolean pendingDrawingEnabled;
 
     @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
     AmapWebMapView(Context context, String apiKey, String securityCode) {
@@ -123,6 +145,19 @@ final class AmapWebMapView extends FrameLayout {
         searchResultListener = listener;
     }
 
+    void setOnMapTapListener(OnMapTapListener listener) {
+        mapTapListener = listener;
+    }
+
+    void setOnDrawPathListener(OnDrawPathListener listener) {
+        drawPathListener = listener;
+    }
+
+    void setDrawingEnabled(boolean enabled) {
+        pendingDrawingEnabled = enabled;
+        if (mapReady) evaluate("setDrawingEnabled(" + (enabled ? "true" : "false") + ")");
+    }
+
     void setCenter(double latitude, double longitude) {
         centerLatitude = clamp(latitude, -85.0d, 85.0d);
         centerLongitude = clamp(longitude, -180.0d, 180.0d);
@@ -160,6 +195,33 @@ final class AmapWebMapView extends FrameLayout {
             return;
         }
         evaluate("searchLocation(" + quote(query) + ")");
+    }
+
+    void setRoute(List<RoutePoint> points) {
+        JSONArray values = new JSONArray();
+        if (points != null) {
+            for (RoutePoint point : points) {
+                if (point == null || !Double.isFinite(point.latitude) || !Double.isFinite(point.longitude)) {
+                    continue;
+                }
+                CoordinateTransform.Coordinate gcj = CoordinateTransform.wgs84ToGcj02(
+                        point.latitude, point.longitude);
+                JSONObject value = new JSONObject();
+                try {
+                    value.put("latitude", gcj.latitude);
+                    value.put("longitude", gcj.longitude);
+                    values.put(value);
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        pendingRouteJson = values.toString();
+        if (mapReady) evaluate("setRoute(" + JSONObject.quote(pendingRouteJson) + ")");
+    }
+
+    void clearRoute() {
+        pendingRouteJson = null;
+        evaluate("clearRoute()");
     }
 
     void onResume() {
@@ -255,6 +317,10 @@ final class AmapWebMapView extends FrameLayout {
                 mapReady = true;
                 evaluate("setCenter(" + number(centerLatitude) + "," + number(centerLongitude)
                         + "," + number(zoom) + ")");
+                if (pendingRouteJson != null) {
+                    evaluate("setRoute(" + JSONObject.quote(pendingRouteJson) + ")");
+                }
+                evaluate("setDrawingEnabled(" + (pendingDrawingEnabled ? "true" : "false") + ")");
             });
         }
 
@@ -268,6 +334,21 @@ final class AmapWebMapView extends FrameLayout {
                 centerLongitude = wgs84.longitude;
                 notifyCenterChanged();
             });
+        }
+
+        @JavascriptInterface
+        public void onMapTapped(double gcjLatitude, double gcjLongitude) {
+            mainHandler.post(() -> {
+                if (destroyed || !Double.isFinite(gcjLatitude) || !Double.isFinite(gcjLongitude)) return;
+                CoordinateTransform.Coordinate wgs84 = CoordinateTransform.gcj02ToWgs84(
+                        gcjLatitude, gcjLongitude);
+                if (mapTapListener != null) mapTapListener.onMapTap(wgs84.latitude, wgs84.longitude);
+            });
+        }
+
+        @JavascriptInterface
+        public void onDrawPath(String json) {
+            mainHandler.post(() -> deliverDrawPath(json));
         }
 
         @JavascriptInterface
@@ -310,6 +391,29 @@ final class AmapWebMapView extends FrameLayout {
         } catch (Exception exception) {
             notifySearchFailed("高德搜索结果解析失败");
         }
+    }
+
+    private void deliverDrawPath(String json) {
+        if (drawPathListener == null) return;
+        ArrayList<RoutePoint> points = new ArrayList<>();
+        try {
+            JSONArray array = new JSONArray(json == null ? "[]" : json);
+            for (int index = 0; index < array.length(); index++) {
+                JSONObject item = array.optJSONObject(index);
+                if (item == null) continue;
+                double gcjLatitude = item.optDouble("latitude", Double.NaN);
+                double gcjLongitude = item.optDouble("longitude", Double.NaN);
+                if (!Double.isFinite(gcjLatitude) || !Double.isFinite(gcjLongitude)) continue;
+                CoordinateTransform.Coordinate wgs84 = CoordinateTransform.gcj02ToWgs84(
+                        gcjLatitude, gcjLongitude);
+                if (Double.isFinite(wgs84.latitude) && Double.isFinite(wgs84.longitude)) {
+                    points.add(new RoutePoint(wgs84.latitude, wgs84.longitude));
+                }
+            }
+        } catch (Exception ignored) {
+            points.clear();
+        }
+        drawPathListener.onDrawPath(points);
     }
 
     static final class SearchResult {

@@ -11,8 +11,8 @@ android {
         applicationId "dev.drift.location"
         minSdk 25
         targetSdk 36
-        versionCode 21
-        versionName "0.13.0-adb-auth"
+        versionCode 29
+        versionName "0.19.1-disclaimer-review"
     }
 
     compileOptions {

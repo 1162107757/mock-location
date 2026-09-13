@@ -15,6 +15,7 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.GradientDrawable;
 import android.location.Location;
 import android.location.LocationListener;
@@ -33,7 +34,10 @@ import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.view.inputmethod.EditorInfo;
+import android.util.Log;
 import android.widget.Button;
+import android.widget.CheckBox;
+import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -52,6 +56,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public final class MainActivity extends Activity {
+    private static final String LOG_TAG = "DriftLocation";
     private static final int REQUEST_PERMISSIONS = 42;
     private static final int REQUEST_CURRENT_LOCATION = 43;
     private static final long LOCATION_TIMEOUT_MS = 12_000L;
@@ -72,6 +77,27 @@ public final class MainActivity extends Activity {
     private static final long MAP_UPDATE_DELAY_MS = MAP_UPDATE_DELAY_SECONDS * 1_000L;
     private static final String MAP_PREFERENCES = "amap_configuration";
     private static final String KEY_AMAP_PRIVACY_AGREED = "privacy_agreed";
+    private static final String KEY_DISCLAIMER_AGREED = "disclaimer_v1_agreed";
+
+    private static final String DISCLAIMER_TEXT =
+            "请在使用本软件前仔细阅读本说明。点击“同意并继续”，表示你已经阅读、理解并同意以下内容。\n\n"
+                    + "一、软件用途\n"
+                    + "本软件仅用于 Android 应用开发、调试、自动化测试和个人设备测试，用于验证应用在不同位置、路线和定位状态下的功能表现。\n"
+                    + "你应当仅在自己拥有或获得明确授权的设备、应用和测试环境中使用本软件。\n\n"
+                    + "二、禁止用途\n"
+                    + "不得使用本软件实施或协助实施欺诈、虚假打卡、虚假签到、伪造考勤、规避平台风控、绕过账号安全验证、影响游戏或竞赛公平性、冒充他人位置、伪造行踪、侵害他人合法权益，或其他违反法律法规、平台规则和服务协议的行为。\n\n"
+                    + "三、Root 权限风险\n"
+                    + "Root 模式可能需要授予系统级权限或修改系统定位配置，可能导致系统不稳定、应用闪退、设备重启、定位服务异常、数据丢失、设备无法启动、保修失效或安全软件报警。使用 Root 模式前请自行备份数据并确认能够承担相关风险。\n\n"
+                    + "四、模拟位置限制\n"
+                    + "本软件不能保证所有应用都能接受模拟位置。第三方应用可能同时使用 GPS、网络、Wi-Fi、基站、传感器、IP 地址或自有风控服务判断位置，因而可能出现位置不一致、获取失败、模拟位置被识别、服务拒绝、应用闪退或账号受限等情况。第三方应用的行为由其自身实现决定。\n\n"
+                    + "五、位置数据\n"
+                    + "本软件可能处理设备位置、地图选点、历史位置和模拟轨迹等数据。相关记录原则上保存在设备本地，但地图服务可能按照其服务协议处理地图请求、网络和设备信息。请勿在未经同意的情况下收集、保存、使用或传播他人的位置、住址、工作地点等敏感信息。\n\n"
+                    + "六、第三方服务\n"
+                    + "本软件使用第三方地图服务显示地图和搜索地点。地图数据、网络请求、服务可用性和坐标精度受第三方服务商影响，用户应自行查阅并遵守第三方服务协议和隐私政策。\n\n"
+                    + "七、责任限制\n"
+                    + "在法律允许的范围内，因用户违反法律法规或第三方规则、使用 Root 权限、操作不当、设备或系统异常、第三方应用或地图服务变化，以及使用模拟位置造成的账号、数据、财产或其他权益损失，由用户自行承担。因网络行为侵害他人民事权益的，用户可能依法承担相应责任。本说明不排除法律规定不得排除或限制的责任。\n\n"
+                    + "八、用户确认\n"
+                    + "我确认拥有当前设备及测试环境的合法使用权；我已阅读并理解本说明；我会遵守法律法规及第三方服务规则；我不会将本软件用于欺诈、作弊、侵权或其他违法用途；我自愿承担因使用模拟位置功能产生的相应风险。";
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService networkExecutor = Executors.newSingleThreadExecutor();
@@ -145,6 +171,10 @@ public final class MainActivity extends Activity {
     }
 
     private void beginAmapSetup(Bundle savedInstanceState) {
+        if (!mapPreferences.getBoolean(KEY_DISCLAIMER_AGREED, false)) {
+            showDisclaimerDialog(savedInstanceState);
+            return;
+        }
         if (mapPreferences.getBoolean(KEY_AMAP_PRIVACY_AGREED, false)) {
             continueAmapSetup(savedInstanceState);
             return;
@@ -171,6 +201,93 @@ public final class MainActivity extends Activity {
         });
         privacyDialog.setOnCancelListener(dialog -> finish());
         privacyDialog.show();
+    }
+
+    private void showDisclaimerDialog(Bundle savedInstanceState) {
+        showDisclaimerDialog(savedInstanceState, true);
+    }
+
+    private void showDisclaimerDialog(Bundle savedInstanceState, boolean initial) {
+        TextView disclaimerText = label(DISCLAIMER_TEXT, 14, COLOR_DIALOG_TEXT, Typeface.NORMAL);
+        disclaimerText.setLineSpacing(dp(4), 1f);
+        disclaimerText.setPadding(dp(4), dp(4), dp(4), dp(16));
+
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.setFillViewport(true);
+        scrollView.setBackgroundColor(COLOR_DIALOG_SURFACE);
+        scrollView.addView(disclaimerText, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        CheckBox confirmBox = new CheckBox(this);
+        confirmBox.setText("我已阅读并理解以上内容，同意承担相应使用责任");
+        confirmBox.setTextSize(13);
+        confirmBox.setTextColor(COLOR_DIALOG_SUBTLE);
+        confirmBox.setEnabled(false);
+        confirmBox.setContentDescription("阅读免责说明并确认");
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setPadding(dp(18), dp(2), dp(18), dp(2));
+        content.setBackgroundColor(COLOR_DIALOG_SURFACE);
+        content.addView(scrollView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(390)));
+        LinearLayout.LayoutParams checkboxParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        checkboxParams.topMargin = dp(8);
+        content.addView(confirmBox, checkboxParams);
+
+        AlertDialog disclaimerDialog = new AlertDialog.Builder(this)
+                .setTitle("使用须知与免责说明")
+                .setView(content)
+                .setNegativeButton(initial ? "不同意并退出" : "关闭", null)
+                .setPositiveButton("同意并继续", null)
+                .create();
+        disclaimerDialog.setCancelable(!initial);
+        disclaimerDialog.setCanceledOnTouchOutside(!initial);
+        disclaimerDialog.setOnCancelListener(dialog -> {
+            if (initial) finish();
+        });
+        disclaimerDialog.setOnShowListener(ignored -> {
+            Button agreeButton = disclaimerDialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            Button exitButton = disclaimerDialog.getButton(AlertDialog.BUTTON_NEGATIVE);
+            agreeButton.setEnabled(false);
+            agreeButton.setTextColor(COLOR_DIALOG_SUBTLE);
+            exitButton.setTextColor(initial ? COLOR_DANGER : COLOR_DIALOG_SUBTLE);
+            exitButton.setOnClickListener(view -> {
+                disclaimerDialog.dismiss();
+                if (initial) finish();
+            });
+            CompoundButton.OnCheckedChangeListener checkedListener = (button, checked) -> {
+                boolean canContinue = checkedBoxAtEnd(scrollView) && checked;
+                agreeButton.setEnabled(canContinue);
+                agreeButton.setTextColor(canContinue ? COLOR_ACCENT : COLOR_DIALOG_SUBTLE);
+            };
+            confirmBox.setOnCheckedChangeListener(checkedListener);
+            scrollView.setOnScrollChangeListener((view, scrollX, scrollY, oldScrollX, oldScrollY) -> {
+                if (!checkedBoxAtEnd(scrollView)) return;
+                confirmBox.setEnabled(true);
+                confirmBox.setTextColor(COLOR_DIALOG_TEXT);
+                checkedListener.onCheckedChanged(confirmBox, confirmBox.isChecked());
+            });
+            scrollView.post(() -> {
+                if (checkedBoxAtEnd(scrollView)) {
+                    confirmBox.setEnabled(true);
+                    confirmBox.setTextColor(COLOR_DIALOG_TEXT);
+                }
+            });
+            agreeButton.setOnClickListener(view -> {
+                if (!checkedBoxAtEnd(scrollView) || !confirmBox.isChecked()) return;
+                if (initial) mapPreferences.edit().putBoolean(KEY_DISCLAIMER_AGREED, true).apply();
+                disclaimerDialog.dismiss();
+                if (initial) beginAmapSetup(savedInstanceState);
+            });
+        });
+        disclaimerDialog.show();
+    }
+
+    private boolean checkedBoxAtEnd(ScrollView scrollView) {
+        if (scrollView == null || scrollView.getChildCount() == 0) return false;
+        View child = scrollView.getChildAt(0);
+        return child.getBottom() <= scrollView.getScrollY() + scrollView.getHeight() + dp(12);
     }
 
     private void continueAmapSetup(Bundle savedInstanceState) {
@@ -226,6 +343,18 @@ public final class MainActivity extends Activity {
         securityParams.topMargin = dp(8);
         keyForm.addView(securityCodeField, securityParams);
 
+        if (!required) {
+            Button disclaimerButton = createCompactButton("查看免责说明", "查看使用须知与免责说明");
+            disclaimerButton.setTextColor(COLOR_DIALOG_TEXT);
+            disclaimerButton.setBackground(rounded(COLOR_DIALOG_SURFACE, 10,
+                    COLOR_DIALOG_BORDER, 1));
+            LinearLayout.LayoutParams disclaimerParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
+            disclaimerParams.topMargin = dp(10);
+            keyForm.addView(disclaimerButton, disclaimerParams);
+            disclaimerButton.setTag("disclaimer_review");
+        }
+
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(required ? "配置高德 JS API" : "高德地图设置")
                 .setMessage("请在高德控制台创建“Web端(JS API)” Key，并填写对应的安全密钥。保存后应用会重新加载地图。")
@@ -239,6 +368,15 @@ public final class MainActivity extends Activity {
             if (required) finish();
         });
         dialog.setOnShowListener(ignored -> {
+            if (!required) {
+                View disclaimerView = keyForm.findViewWithTag("disclaimer_review");
+                if (disclaimerView != null) {
+                    disclaimerView.setOnClickListener(view -> {
+                        dialog.dismiss();
+                        showDisclaimerDialog(null, false);
+                    });
+                }
+            }
             dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(view -> {
                 dialog.dismiss();
                 if (required) finish();
@@ -459,6 +597,17 @@ public final class MainActivity extends Activity {
         Button historyButton = createCompactButton("历史位置", "查看模拟过的位置");
         historyButton.setOnClickListener(view -> showHistoryDialog());
         utilityRow.addView(historyButton, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        Button trajectoryButton = createCompactButton("轨迹模拟", "打开轨迹模拟功能");
+        trajectoryButton.setOnClickListener(view -> {
+            try {
+                startActivity(new Intent(this, TrajectoryActivity.class));
+            } catch (RuntimeException exception) {
+                Toast.makeText(this, "无法打开轨迹模拟", Toast.LENGTH_SHORT).show();
+            }
+        });
+        LinearLayout.LayoutParams trajectoryParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
+        trajectoryParams.leftMargin = dp(8);
+        utilityRow.addView(trajectoryButton, trajectoryParams);
         Button mapSettingsButton = createCompactButton("地图设置", "配置高德地图 Key");
         mapSettingsButton.setOnClickListener(view -> showAmapKeyDialog(false, null));
         LinearLayout.LayoutParams mapSettingsParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
@@ -690,22 +839,32 @@ public final class MainActivity extends Activity {
     }
 
     private void beginLocateFlow() {
-        if (running) {
-            Toast.makeText(this, "当前位置正在被模拟；停止模拟后可获取真实位置", Toast.LENGTH_LONG).show();
-            return;
+        try {
+            if (running) {
+                Toast.makeText(this, "当前位置正在被模拟；停止模拟后可获取真实位置", Toast.LENGTH_LONG).show();
+                return;
+            }
+            if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{
+                        Manifest.permission.ACCESS_COARSE_LOCATION,
+                        Manifest.permission.ACCESS_FINE_LOCATION
+                }, REQUEST_CURRENT_LOCATION);
+                return;
+            }
+            locateCurrentPosition();
+        } catch (RuntimeException exception) {
+            Log.e(LOG_TAG, "开始获取当前位置失败", exception);
+            finishLocationRequest();
+            Toast.makeText(this, "无法获取当前位置，请确认系统定位已开启", Toast.LENGTH_LONG).show();
         }
-        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{
-                    Manifest.permission.ACCESS_COARSE_LOCATION,
-                    Manifest.permission.ACCESS_FINE_LOCATION
-            }, REQUEST_CURRENT_LOCATION);
-            return;
-        }
-        locateCurrentPosition();
     }
 
     @SuppressLint("MissingPermission") // Called only after ACCESS_FINE_LOCATION is granted.
     private void locateCurrentPosition() {
+        if (locationManager == null || locateButton == null || isFinishing()) {
+            Toast.makeText(this, "系统定位服务不可用", Toast.LENGTH_LONG).show();
+            return;
+        }
         finishLocationRequest();
         locateButton.setEnabled(false);
         locateButton.setText("…");
@@ -717,11 +876,17 @@ public final class MainActivity extends Activity {
         }
 
         locationTimeout = () -> {
-            Location fallback = bestLastKnownLocation();
-            finishLocationRequest();
-            if (fallback != null) {
-                showDeviceLocation(fallback);
-            } else {
+            try {
+                Location fallback = bestLastKnownLocation();
+                finishLocationRequest();
+                if (fallback != null) {
+                    showDeviceLocation(fallback);
+                } else {
+                    Toast.makeText(this, "暂时无法获取当前位置，请确认系统定位已开启", Toast.LENGTH_LONG).show();
+                }
+            } catch (RuntimeException exception) {
+                Log.e(LOG_TAG, "定位超时回退失败", exception);
+                finishLocationRequest();
                 Toast.makeText(this, "暂时无法获取当前位置，请确认系统定位已开启", Toast.LENGTH_LONG).show();
             }
         };
@@ -729,13 +894,15 @@ public final class MainActivity extends Activity {
 
         try {
             pendingLocationListener = location -> {
-                if (location != null && !location.isFromMockProvider()) {
+                if (!isFinishing() && location != null && !isMockLocation(location)) {
                     finishLocationRequest();
                     showDeviceLocation(location);
                 }
             };
             boolean registered = false;
-            String[] providers = {LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, "fused"};
+            String[] providers = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                    ? new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER, "fused"}
+                    : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER};
             for (String provider : providers) {
                 try {
                     if (!locationManager.isProviderEnabled(provider)) continue;
@@ -760,16 +927,15 @@ public final class MainActivity extends Activity {
     @SuppressLint("MissingPermission")
     private Location bestLastKnownLocation() {
         Location best = null;
-        String[] providers = {
-                LocationManager.GPS_PROVIDER,
-                LocationManager.NETWORK_PROVIDER,
-                "fused",
-                LocationManager.PASSIVE_PROVIDER
-        };
+        String[] providers = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+                ? new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER,
+                "fused", LocationManager.PASSIVE_PROVIDER}
+                : new String[]{LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER,
+                LocationManager.PASSIVE_PROVIDER};
         for (String provider : providers) {
             try {
                 Location candidate = locationManager.getLastKnownLocation(provider);
-                if (candidate == null || candidate.isFromMockProvider()) continue;
+                if (candidate == null || isMockLocation(candidate)) continue;
                 if (best == null || candidate.getTime() > best.getTime()) best = candidate;
             } catch (RuntimeException ignored) {
             }
@@ -778,13 +944,32 @@ public final class MainActivity extends Activity {
     }
 
     private void showDeviceLocation(Location location) {
+        if (location == null || isFinishing()) return;
+        double latitude = location.getLatitude();
+        double longitude = location.getLongitude();
+        if (!Double.isFinite(latitude) || !Double.isFinite(longitude)
+                || latitude < -90d || latitude > 90d || longitude < -180d || longitude > 180d) {
+            Toast.makeText(this, "系统返回了无效的位置", Toast.LENGTH_LONG).show();
+            return;
+        }
         finishLocationRequest();
         selectedPlaceName = "设备当前位置";
-        selectedPlaceLatitude = location.getLatitude();
-        selectedPlaceLongitude = location.getLongitude();
-        mapView.setCenter(location.getLatitude(), location.getLongitude());
+        selectedPlaceLatitude = latitude;
+        selectedPlaceLongitude = longitude;
+        if (mapView == null) return;
+        mapView.setCenter(latitude, longitude);
         mapView.zoomToAtLeast(16);
         Toast.makeText(this, "已定位到当前位置 · 精度约 " + Math.round(location.getAccuracy()) + " 米", Toast.LENGTH_SHORT).show();
+    }
+
+    private boolean isMockLocation(Location location) {
+        try {
+            return Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR2
+                    && location.isFromMockProvider();
+        } catch (RuntimeException exception) {
+            Log.w(LOG_TAG, "读取位置来源标记失败，继续使用该位置", exception);
+            return false;
+        }
     }
 
     private void finishLocationRequest() {
@@ -794,7 +979,7 @@ public final class MainActivity extends Activity {
         }
         if (pendingLocationListener != null) {
             try {
-                locationManager.removeUpdates(pendingLocationListener);
+                if (locationManager != null) locationManager.removeUpdates(pendingLocationListener);
             } catch (RuntimeException ignored) {
             }
             pendingLocationListener = null;

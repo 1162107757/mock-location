@@ -51,6 +51,13 @@
     (function () {
         var map = null;
         var placeSearch = null;
+        var routePolyline = null;
+        var routeMarkers = [];
+        var drawingEnabled = false;
+        var drawingActive = false;
+        var drawingPath = [];
+        var drawingLastPixel = null;
+        var drawingPreview = null;
         var applyingCenter = false;
         var readyReported = false;
 
@@ -123,6 +130,173 @@
             if (map && typeof map.resize === 'function') map.resize();
         };
 
+        window.clearRoute = function () {
+            if (!map) return;
+            if (routePolyline) {
+                map.remove(routePolyline);
+                routePolyline = null;
+            }
+            if (routeMarkers.length) {
+                map.remove(routeMarkers);
+                routeMarkers = [];
+            }
+        };
+
+        window.setDrawingEnabled = function (enabled) {
+            drawingEnabled = !!enabled;
+            drawingActive = false;
+            drawingPath = [];
+            drawingLastPixel = null;
+            if (drawingPreview && map) {
+                map.remove(drawingPreview);
+                drawingPreview = null;
+            }
+            if (map && typeof map.setStatus === 'function') {
+                map.setStatus({
+                    dragEnable: !drawingEnabled,
+                    zoomEnable: !drawingEnabled,
+                    doubleClickZoom: !drawingEnabled
+                });
+            }
+            var container = document.getElementById('map');
+            if (container) container.style.touchAction = drawingEnabled ? 'none' : 'auto';
+        };
+
+        function drawingPointFromTouch(event) {
+            var touch = event && event.touches && event.touches.length
+                ? event.touches[0] : event;
+            var container = document.getElementById('map');
+            if (!map || !touch || !container || typeof map.containerToLngLat !== 'function') return null;
+            var rect = container.getBoundingClientRect();
+            var pixelX = Number(touch.clientX) - rect.left;
+            var pixelY = Number(touch.clientY) - rect.top;
+            if (!isFinite(pixelX) || !isFinite(pixelY)) return null;
+            var lngLat = map.containerToLngLat(new AMap.Pixel(pixelX, pixelY));
+            if (!lngLat || !isFinite(lngLat.lat) || !isFinite(lngLat.lng)) return null;
+            return { pixelX: pixelX, pixelY: pixelY, latitude: lngLat.lat, longitude: lngLat.lng };
+        }
+
+        function appendDrawingPoint(event) {
+            var point = drawingPointFromTouch(event);
+            if (!point) return;
+            if (drawingLastPixel) {
+                var dx = point.pixelX - drawingLastPixel.x;
+                var dy = point.pixelY - drawingLastPixel.y;
+                if (Math.sqrt(dx * dx + dy * dy) < 6) return;
+            }
+            drawingLastPixel = { x: point.pixelX, y: point.pixelY };
+            drawingPath.push({ latitude: point.latitude, longitude: point.longitude });
+            if (!drawingPreview) {
+                drawingPreview = new AMap.Polyline({
+                    path: [],
+                    strokeColor: '#38bdf8',
+                    strokeWeight: 5,
+                    strokeOpacity: 0.95,
+                    lineJoin: 'round'
+                });
+                map.add(drawingPreview);
+            }
+            var path = [];
+            for (var index = 0; index < drawingPath.length; index++) {
+                path.push([drawingPath[index].longitude, drawingPath[index].latitude]);
+            }
+            drawingPreview.setPath(path);
+        }
+
+        function finishDrawing() {
+            if (!drawingActive) return;
+            drawingActive = false;
+            if (drawingPreview && map) {
+                map.remove(drawingPreview);
+                drawingPreview = null;
+            }
+            if (drawingPath.length >= 2) {
+                var target = bridge('onDrawPath');
+                if (target) target.onDrawPath(JSON.stringify(drawingPath));
+            }
+            drawingPath = [];
+            drawingLastPixel = null;
+        }
+
+        var mapElement = document.getElementById('map');
+        if (mapElement) {
+            mapElement.addEventListener('touchstart', function (event) {
+                if (!drawingEnabled) return;
+                event.preventDefault();
+                drawingActive = true;
+                drawingPath = [];
+                drawingLastPixel = null;
+                appendDrawingPoint(event);
+            }, false);
+            mapElement.addEventListener('touchmove', function (event) {
+                if (!drawingEnabled || !drawingActive) return;
+                event.preventDefault();
+                appendDrawingPoint(event);
+            }, false);
+            mapElement.addEventListener('touchend', function (event) {
+                if (!drawingEnabled) return;
+                event.preventDefault();
+                finishDrawing();
+            }, false);
+            mapElement.addEventListener('touchcancel', function (event) {
+                if (!drawingEnabled) return;
+                event.preventDefault();
+                finishDrawing();
+            }, false);
+        }
+
+        window.setRoute = function (json) {
+            if (!map) return;
+            window.clearRoute();
+            var values;
+            try {
+                values = typeof json === 'string' ? JSON.parse(json) : json;
+            } catch (ignored) {
+                values = [];
+            }
+            if (!values || values.length < 1) return;
+            var path = [];
+            for (var index = 0; index < values.length; index++) {
+                var point = values[index];
+                if (!point || !isFinite(Number(point.latitude)) || !isFinite(Number(point.longitude))) continue;
+                path.push([Number(point.longitude), Number(point.latitude)]);
+            }
+            if (path.length < 1) return;
+            var startMarker = new AMap.Marker({
+                position: path[0],
+                title: '起点',
+                content: markerContent('#22c55e'),
+                anchor: 'center',
+                offset: new AMap.Pixel(0, 0)
+            });
+            routeMarkers = [startMarker];
+            if (path.length >= 2) {
+                routePolyline = new AMap.Polyline({
+                    path: path,
+                    strokeColor: '#22c55e',
+                    strokeWeight: 5,
+                    strokeOpacity: 0.92,
+                    showDir: true,
+                    lineJoin: 'round'
+                });
+                map.add(routePolyline);
+                var endMarker = new AMap.Marker({
+                    position: path[path.length - 1],
+                    title: '终点',
+                    content: markerContent('#ef4444'),
+                    anchor: 'center',
+                    offset: new AMap.Pixel(0, 0)
+                });
+                routeMarkers.push(endMarker);
+            }
+            map.add(routeMarkers);
+        };
+
+        function markerContent(color) {
+            return '<div style="width:14px;height:14px;border-radius:50%;background:' + color
+                + ';border:3px solid #fff;box-shadow:0 1px 5px rgba(0,0,0,.45)"></div>';
+        }
+
         window.searchLocation = function (keyword) {
             if (!map || !window.AMap) {
                 var unavailable = bridge('onSearchError');
@@ -189,8 +363,15 @@
                 }
                 map = new AMap.Map('map', mapOptions);
                 map.on('moveend', emitCenter);
+                map.on('click', function (event) {
+                    if (drawingEnabled) return;
+                    if (!event || !event.lnglat) return;
+                    var target = bridge('onMapTapped');
+                    if (target) target.onMapTapped(event.lnglat.lat, event.lnglat.lng);
+                });
                 map.on('complete', reportReady);
                 map.on('tilesloaded', reportReady);
+                window.setDrawingEnabled(drawingEnabled);
             } catch (exception) {
                 showStatus('高德地图初始化失败', true);
                 var error = bridge('onMapError');

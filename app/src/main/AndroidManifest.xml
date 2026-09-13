@@ -38,6 +38,11 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".TrajectoryActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
+
         <service
             android:name=".MockLocationService"
             android:exported="false"
