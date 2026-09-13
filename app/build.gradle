@@ -11,8 +11,8 @@ android {
         applicationId "dev.drift.location"
         minSdk 25
         targetSdk 36
-        versionCode 16
-        versionName "0.11.0-amap"
+        versionCode 20
+        versionName "0.12.3-webmap-raster"
     }
 
     compileOptions {
@@ -33,5 +33,4 @@ android {
 
 dependencies {
     compileOnly project(":xposed-stubs")
-    implementation "com.amap.api:3dmap-location-search:10.1.700_loc6.5.1_sea9.7.4"
 }

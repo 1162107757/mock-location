@@ -39,14 +39,6 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import com.amap.api.maps.MapsInitializer;
-import com.amap.api.services.core.AMapException;
-import com.amap.api.services.core.LatLonPoint;
-import com.amap.api.services.core.PoiItem;
-import com.amap.api.services.core.ServiceSettings;
-import com.amap.api.services.poisearch.PoiResult;
-import com.amap.api.services.poisearch.PoiSearch;
-
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.text.SimpleDateFormat;
@@ -85,7 +77,7 @@ public final class MainActivity extends Activity {
     private SharedPreferences preferences;
     private SharedPreferences mapPreferences;
     private LocationHistoryStore historyStore;
-    private AmapMapView mapView;
+    private AmapWebMapView mapView;
     private EditText searchInput;
     private TextView coordinateText;
     private TextView statusText;
@@ -104,9 +96,9 @@ public final class MainActivity extends Activity {
     private String selectedPlaceName = "";
     private double selectedPlaceLatitude = Double.NaN;
     private double selectedPlaceLongitude = Double.NaN;
-    private String amapApiKey = "";
+    private String amapJsApiKey = "";
+    private String amapJsSecurityCode = "";
     private boolean interfaceInitialized;
-    private PoiSearch activePoiSearch;
     private Runnable pendingMapCommitTask;
     private Runnable pendingMapCountdownTask;
     private double pendingMapLatitude;
@@ -151,17 +143,13 @@ public final class MainActivity extends Activity {
     }
 
     private void beginAmapSetup(Bundle savedInstanceState) {
-        MapsInitializer.updatePrivacyShow(this, true, true);
-        ServiceSettings.updatePrivacyShow(this, true, true);
         if (mapPreferences.getBoolean(KEY_AMAP_PRIVACY_AGREED, false)) {
-            MapsInitializer.updatePrivacyAgree(this, true);
-            ServiceSettings.updatePrivacyAgree(this, true);
             continueAmapSetup(savedInstanceState);
             return;
         }
         AlertDialog privacyDialog = new AlertDialog.Builder(this)
-                .setTitle("高德地图服务说明")
-                .setMessage("地图显示和地点搜索由高德开放平台 SDK 提供。使用时，高德 SDK 会按照其隐私权政策处理网络、设备及粗略位置信息。点击“同意并继续”后才会初始化地图。")
+                .setTitle("高德地图 JS API 服务说明")
+                .setMessage("地图显示和地点搜索由高德开放平台 JS API 提供，并通过系统 WebView 加载。使用时，高德服务会按照其隐私权政策处理网络、设备及粗略位置信息。点击“同意并继续”后才会加载地图。")
                 .setNegativeButton("退出", null)
                 .setNeutralButton("查看高德隐私政策", null)
                 .setPositiveButton("同意并继续", null)
@@ -175,8 +163,6 @@ public final class MainActivity extends Activity {
                     .setOnClickListener(view -> openAmapPrivacyPolicy());
             privacyDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
                     mapPreferences.edit().putBoolean(KEY_AMAP_PRIVACY_AGREED, true).apply();
-                    MapsInitializer.updatePrivacyAgree(this, true);
-                    ServiceSettings.updatePrivacyAgree(this, true);
                     privacyDialog.dismiss();
                     continueAmapSetup(savedInstanceState);
             });
@@ -186,18 +172,13 @@ public final class MainActivity extends Activity {
     }
 
     private void continueAmapSetup(Bundle savedInstanceState) {
-        amapApiKey = AmapKeyStore.get(this);
-        if (amapApiKey.isEmpty()) {
+        amapJsApiKey = AmapKeyStore.getJsApiKey(this);
+        amapJsSecurityCode = AmapKeyStore.getJsSecurityCode(this);
+        if (amapJsApiKey.isEmpty() || amapJsSecurityCode.isEmpty()) {
             showAmapKeyDialog(true, savedInstanceState);
             return;
         }
-        configureAmapSdk();
         initializeInterface(savedInstanceState);
-    }
-
-    private void configureAmapSdk() {
-        MapsInitializer.setApiKey(amapApiKey);
-        ServiceSettings.getInstance().setApiKey(amapApiKey);
     }
 
     private void initializeInterface(Bundle savedInstanceState) {
@@ -209,6 +190,10 @@ public final class MainActivity extends Activity {
 
         double latitude = readDoublePreference(LocationContract.KEY_LATITUDE, LocationContract.DEFAULT_LATITUDE);
         double longitude = readDoublePreference(LocationContract.KEY_LONGITUDE, LocationContract.DEFAULT_LONGITUDE);
+        // The initial center restores the last committed location; do not start the
+        // three-second update countdown until the user actually moves the map.
+        lastMapCenterLatitude = latitude;
+        lastMapCenterLongitude = longitude;
         mapView.setCenter(latitude, longitude);
         renderState(running ? "正在模拟位置" : "准备就绪");
         checkRootAccess(false);
@@ -217,15 +202,32 @@ public final class MainActivity extends Activity {
     private void showAmapKeyDialog(boolean required, Bundle savedInstanceState) {
         EditText keyField = new EditText(this);
         keyField.setSingleLine(true);
-        keyField.setHint("32 位高德 Android Key");
+        keyField.setHint("32 位高德 Web端(JS API) Key");
         keyField.setSelectAllOnFocus(true);
         keyField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         keyField.setPadding(dp(24), dp(8), dp(24), dp(8));
 
+        EditText securityCodeField = new EditText(this);
+        securityCodeField.setSingleLine(true);
+        securityCodeField.setHint("高德 JS API 安全密钥（jscode）");
+        securityCodeField.setSelectAllOnFocus(true);
+        securityCodeField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        securityCodeField.setPadding(dp(24), dp(8), dp(24), dp(8));
+
+        LinearLayout keyForm = new LinearLayout(this);
+        keyForm.setOrientation(LinearLayout.VERTICAL);
+        keyForm.setPadding(0, dp(4), 0, 0);
+        keyForm.addView(keyField, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
+        LinearLayout.LayoutParams securityParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        securityParams.topMargin = dp(8);
+        keyForm.addView(securityCodeField, securityParams);
+
         AlertDialog dialog = new AlertDialog.Builder(this)
-                .setTitle(required ? "配置高德地图 Key" : "高德地图设置")
-                .setMessage("Key 必须绑定包名 dev.drift.location，并包含当前安装包的调试版 SHA-1。保存后应用会重新加载地图。")
-                .setView(keyField)
+                .setTitle(required ? "配置高德 JS API" : "高德地图设置")
+                .setMessage("请在高德控制台创建“Web端(JS API)” Key，并填写对应的安全密钥。保存后应用会重新加载地图。")
+                .setView(keyForm)
                 .setNegativeButton(required ? "退出" : "取消", null)
                 .setNeutralButton("申请 Key", null)
                 .setPositiveButton("保存", null)
@@ -242,20 +244,25 @@ public final class MainActivity extends Activity {
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> openAmapKeyConsole());
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
                 String key = keyField.getText().toString().trim();
+                String securityCode = securityCodeField.getText().toString().trim();
                 if (!key.matches("[0-9A-Za-z]{32}")) {
-                    keyField.setError("请输入完整的 32 位高德 Android Key");
+                    keyField.setError("请输入完整的 32 位高德 Web端(JS API) Key");
                     return;
                 }
-                if (!AmapKeyStore.save(this, key)) {
-                    keyField.setError("Key 保存失败，请重试");
+                if (!securityCode.matches("[0-9A-Za-z]{16,64}")) {
+                    securityCodeField.setError("请输入有效的 JS API 安全密钥");
                     return;
                 }
-                amapApiKey = key;
+                if (!AmapKeyStore.saveJsConfiguration(this, key, securityCode)) {
+                    keyField.setError("配置保存失败，请重试");
+                    return;
+                }
+                amapJsApiKey = key;
+                amapJsSecurityCode = securityCode;
                 dialog.dismiss();
                 if (interfaceInitialized) {
                     recreate();
                 } else {
-                    configureAmapSdk();
                     initializeInterface(savedInstanceState);
                 }
             });
@@ -283,7 +290,7 @@ public final class MainActivity extends Activity {
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(COLOR_BACKGROUND);
 
-        mapView = new AmapMapView(this);
+        mapView = new AmapWebMapView(this, amapJsApiKey, amapJsSecurityCode);
         mapView.setOnCenterChangedListener((latitude, longitude) -> {
             boolean centerChanged = !Double.isFinite(lastMapCenterLatitude)
                     || Math.abs(latitude - lastMapCenterLatitude) > 0.000001d
@@ -295,6 +302,27 @@ public final class MainActivity extends Activity {
             if (!matchesSelectedPlace(latitude, longitude)) selectedPlaceName = "";
             coordinateText.setText(formatCoordinate(latitude, longitude));
             if (centerChanged) scheduleMapLocationUpdate(latitude, longitude);
+        });
+        mapView.setOnSearchResultListener(new AmapWebMapView.OnSearchResultListener() {
+            @Override
+            public void onSearchResults(List<AmapWebMapView.SearchResult> results) {
+                searchInput.setEnabled(true);
+                searchInput.setHint("搜索城市、街道或地点");
+                ArrayList<SearchResult> converted = new ArrayList<>();
+                for (AmapWebMapView.SearchResult result : results) {
+                    converted.add(new SearchResult(result.name, result.latitude, result.longitude));
+                }
+                showSearchResults(converted);
+            }
+
+            @Override
+            public void onSearchFailed(String message) {
+                searchInput.setEnabled(true);
+                searchInput.setHint("搜索城市、街道或地点");
+                Toast.makeText(MainActivity.this,
+                        message == null || message.isEmpty() ? "高德搜索失败" : message,
+                        Toast.LENGTH_LONG).show();
+            }
         });
         root.addView(mapView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -1006,48 +1034,7 @@ public final class MainActivity extends Activity {
         }
         searchInput.setEnabled(false);
         searchInput.setHint("正在搜索…");
-        try {
-            PoiSearch.Query poiQuery = new PoiSearch.Query(query, "", "");
-            poiQuery.setPageSize(10);
-            poiQuery.setPageNum(1);
-            activePoiSearch = new PoiSearch(this, poiQuery);
-            activePoiSearch.setOnPoiSearchListener(new PoiSearch.OnPoiSearchListener() {
-                @Override
-                public void onPoiSearched(PoiResult poiResult, int errorCode) {
-                    searchInput.setEnabled(true);
-                    searchInput.setHint("搜索城市、街道或地点");
-                    if (errorCode != AMapException.CODE_AMAP_SUCCESS || poiResult == null) {
-                        Toast.makeText(MainActivity.this,
-                                "高德搜索失败（" + errorCode + "），请检查 Key 或网络",
-                                Toast.LENGTH_LONG).show();
-                        return;
-                    }
-                    List<SearchResult> results = new ArrayList<>();
-                    for (PoiItem item : poiResult.getPois()) {
-                        LatLonPoint point = item.getLatLonPoint();
-                        if (point == null) continue;
-                        CoordinateTransform.Coordinate wgs84 = CoordinateTransform.gcj02ToWgs84(
-                                point.getLatitude(), point.getLongitude());
-                        results.add(new SearchResult(
-                                amapPoiDisplayName(item, query),
-                                wgs84.latitude,
-                                wgs84.longitude
-                        ));
-                    }
-                    showSearchResults(results);
-                }
-
-                @Override
-                public void onPoiItemSearched(PoiItem poiItem, int errorCode) {
-                    // This screen performs keyword searches only.
-                }
-            });
-            activePoiSearch.searchPOIAsyn();
-        } catch (AMapException exception) {
-            searchInput.setEnabled(true);
-            searchInput.setHint("搜索城市、街道或地点");
-            Toast.makeText(this, "无法启动高德搜索：" + exception.getErrorMessage(), Toast.LENGTH_LONG).show();
-        }
+        mapView.search(query);
     }
 
     private void showSearchResults(List<SearchResult> results) {
@@ -1212,18 +1199,6 @@ public final class MainActivity extends Activity {
     private String briefName(String name) {
         int comma = name.indexOf(',');
         return comma > 0 ? name.substring(0, comma) : name;
-    }
-
-    private static String amapPoiDisplayName(PoiItem item, String fallback) {
-        StringBuilder result = new StringBuilder();
-        String[] parts = {item.getTitle(), item.getSnippet(), item.getCityName(), item.getAdName()};
-        for (String part : parts) {
-            String value = part == null ? "" : part.trim();
-            if (value.isEmpty() || result.toString().contains(value)) continue;
-            if (result.length() > 0) result.append(" · ");
-            result.append(value);
-        }
-        return result.length() == 0 ? fallback : result.toString();
     }
 
     private void writeCoordinatePreferences(double latitude, double longitude) {

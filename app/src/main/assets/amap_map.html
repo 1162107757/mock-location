@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+    <style>
+        html, body, #map { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; }
+        body { background: #0f172a; }
+        #map-status {
+            position: absolute;
+            left: 50%;
+            top: 42%;
+            z-index: 2147483647;
+            max-width: 78%;
+            transform: translate(-50%, -50%);
+            padding: 12px 16px;
+            border-radius: 12px;
+            background: rgba(15, 23, 42, 0.90);
+            color: #f8fafc;
+            font: 14px/1.5 sans-serif;
+            text-align: center;
+            box-shadow: 0 4px 18px rgba(0, 0, 0, 0.24);
+        }
+        #map-status[hidden] { display: none; }
+        #map-retry {
+            display: none;
+            margin: 10px auto 0;
+            padding: 7px 16px;
+            border: 0;
+            border-radius: 8px;
+            background: #22c55e;
+            color: #0f172a;
+            font-weight: bold;
+        }
+    </style>
+    <script>
+        window._AMapSecurityConfig = { securityJsCode: '__AMAP_SECURITY_CODE__' };
+        window.__DRIFT_LEGACY_AMAP__ = __AMAP_LEGACY__;
+        if (window.__DRIFT_LEGACY_AMAP__) window.forbidenWebGL = true;
+    </script>
+    <script src="https://webapi.amap.com/maps?v=__AMAP_VERSION__&key=__AMAP_KEY__&plugin=AMap.PlaceSearch"></script>
+</head>
+<body>
+<div id="map"></div>
+<div id="map-status">
+    <span id="map-status-text">地图加载中…</span>
+    <button id="map-retry" type="button" onclick="window.location.reload()">重新加载</button>
+</div>
+<script>
+    (function () {
+        var map = null;
+        var placeSearch = null;
+        var applyingCenter = false;
+        var readyReported = false;
+
+        function showStatus(message, canRetry) {
+            var status = document.getElementById('map-status');
+            var text = document.getElementById('map-status-text');
+            var retry = document.getElementById('map-retry');
+            if (!status || !text || !retry) return;
+            text.textContent = message;
+            retry.style.display = canRetry ? 'block' : 'none';
+            status.hidden = false;
+        }
+
+        function hideStatus() {
+            var status = document.getElementById('map-status');
+            if (status) status.hidden = true;
+        }
+
+        function updateCoverageStatus(latitude, longitude) {
+            var mainlandBounds = latitude >= 18 && latitude <= 54 && longitude >= 73 && longitude <= 135;
+            if (mainlandBounds) {
+                hideStatus();
+            } else {
+                showStatus('当前坐标位于中国大陆以外；若底图为空，需要为高德 Key 开通世界地图权限', false);
+            }
+        }
+
+        function reportReady() {
+            if (readyReported) return;
+            readyReported = true;
+            hideStatus();
+            var ready = bridge('onMapReady');
+            if (ready) ready.onMapReady();
+        }
+
+        function bridge(name) {
+            return window.DriftBridge && typeof window.DriftBridge[name] === 'function'
+                ? window.DriftBridge : null;
+        }
+
+        function emitCenter() {
+            if (applyingCenter || !map) return;
+            var center = map.getCenter();
+            var target = bridge('onCenterChanged');
+            if (center && target) target.onCenterChanged(center.lat, center.lng);
+        }
+
+        window.setCenter = function (latitude, longitude, zoom) {
+            if (!map) return;
+            applyingCenter = true;
+            map.setCenter([longitude, latitude], false, 200);
+            if (typeof zoom === 'number') map.setZoom(zoom, false, 200);
+            updateCoverageStatus(latitude, longitude);
+            window.setTimeout(function () { applyingCenter = false; }, 350);
+        };
+
+        window.setZoom = function (value) {
+            if (map) map.setZoom(Number(value));
+        };
+
+        window.zoomIn = function () {
+            if (map) map.zoomIn();
+        };
+
+        window.zoomOut = function () {
+            if (map) map.zoomOut();
+        };
+
+        window.resumeMap = function () {
+            if (map && typeof map.resize === 'function') map.resize();
+        };
+
+        window.searchLocation = function (keyword) {
+            if (!map || !window.AMap) {
+                var unavailable = bridge('onSearchError');
+                if (unavailable) unavailable.onSearchError('地图尚未加载完成');
+                return;
+            }
+            if (!placeSearch) placeSearch = new AMap.PlaceSearch({ pageSize: 10, pageIndex: 1 });
+            placeSearch.search(keyword, function (status, result) {
+                var callback;
+                if (status === 'complete' && result && result.poiList) {
+                    var pois = result.poiList.pois || [];
+                    var values = [];
+                    for (var index = 0; index < pois.length; index++) {
+                        var poi = pois[index];
+                        if (!poi.location) continue;
+                        values.push({
+                            name: displayName(poi, keyword),
+                            latitude: poi.location.lat,
+                            longitude: poi.location.lng
+                        });
+                    }
+                    callback = bridge('onSearchResults');
+                    if (callback) callback.onSearchResults(JSON.stringify(values));
+                    return;
+                }
+                callback = bridge('onSearchError');
+                if (callback) callback.onSearchError(status || '高德搜索失败');
+            });
+        };
+
+        function displayName(poi, fallback) {
+            var parts = [poi.name, poi.address, poi.cityname, poi.adname];
+            var output = [];
+            for (var index = 0; index < parts.length; index++) {
+                var value = parts[index] == null ? '' : String(parts[index]).trim();
+                if (!value || output.indexOf(value) >= 0) continue;
+                output.push(value);
+            }
+            return output.length ? output.join(' · ') : fallback;
+        }
+
+        function init() {
+            try {
+                if (!window.AMap) {
+                    var unavailable = bridge('onMapError');
+                    if (unavailable) unavailable.onMapError('高德 JS API 加载失败，请检查 Web端(JS API) Key、安全密钥和网络');
+                    return;
+                }
+                var mapOptions = {
+                    resizeEnable: true,
+                    zoom: 13,
+                    center: [121.473701, 31.230416],
+                    viewMode: '2D',
+                    rotateEnable: false,
+                    pitchEnable: false,
+                    dragEnable: true,
+                    zoomEnable: true,
+                    doubleClickZoom: true,
+                    zooms: [2, 20]
+                };
+                if (window.__DRIFT_LEGACY_AMAP__) {
+                    mapOptions.baseRender = 'd';
+                    mapOptions.showIndoorMap = false;
+                }
+                map = new AMap.Map('map', mapOptions);
+                map.on('moveend', emitCenter);
+                map.on('complete', reportReady);
+                map.on('tilesloaded', reportReady);
+            } catch (exception) {
+                showStatus('高德地图初始化失败', true);
+                var error = bridge('onMapError');
+                if (error) error.onMapError(String(exception && exception.message || '高德地图初始化失败'));
+            }
+        }
+
+        function initWhenSized(attempt) {
+            if (map) return;
+            var container = document.getElementById('map');
+            if (container && container.clientWidth > 0 && container.clientHeight > 0) {
+                init();
+                return;
+            }
+            if (attempt < 40) {
+                window.setTimeout(function () { initWhenSized(attempt + 1); }, 50);
+                return;
+            }
+            showStatus('地图容器初始化失败，请点击重新加载', true);
+            var error = bridge('onMapError');
+            if (error) error.onMapError('地图容器尺寸异常');
+        }
+
+        if (window.AMap) initWhenSized(0);
+        else window.addEventListener('load', function () { initWhenSized(0); });
+        window.onerror = function (message) {
+            if (!window.AMap) {
+                showStatus('高德 JS API 加载失败，请检查网络和地图配置', true);
+                var error = bridge('onMapError');
+                if (error) error.onMapError(String(message || '高德 JS API 加载失败'));
+            }
+        };
+    })();
+</script>
+</body>
+</html>
