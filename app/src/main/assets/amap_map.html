@@ -33,6 +33,72 @@
             color: #0f172a;
             font-weight: bold;
         }
+        #draw-tip {
+            position: absolute;
+            left: 50%;
+            bottom: 22%;
+            z-index: 2147483646;
+            max-width: 76%;
+            transform: translateX(-50%);
+            padding: 9px 14px;
+            border-radius: 10px;
+            background: rgba(7, 7, 6, 0.84);
+            color: #fffdf5;
+            font: 13px/1.45 sans-serif;
+            text-align: center;
+            pointer-events: none;
+        }
+        #draw-tip[hidden] { display: none; }
+        #draw-cursor {
+            position: absolute;
+            z-index: 2147483645;
+            width: 26px;
+            height: 26px;
+            margin: -16px 0 0 -16px;
+            border: 3px solid #2f98e8;
+            border-radius: 50%;
+            background: rgba(255, 253, 245, 0.92);
+            box-shadow: 0 1px 7px rgba(0, 0, 0, 0.42);
+            pointer-events: none;
+        }
+        #draw-cursor::after {
+            content: '';
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            width: 8px;
+            height: 8px;
+            margin: -4px 0 0 -4px;
+            border-radius: 50%;
+            background: #e84a26;
+        }
+        #draw-cursor-stem {
+            position: absolute;
+            z-index: 2147483644;
+            height: 2px;
+            transform-origin: 0 50%;
+            background: rgba(47, 152, 232, 0.8);
+            pointer-events: none;
+        }
+        #draw-cursor.pick-mode {
+            border-color: #faaf14;
+            box-shadow: 0 1px 8px rgba(0, 0, 0, 0.42), 0 0 0 5px rgba(250, 175, 20, 0.18);
+        }
+        #draw-cursor-badge {
+            position: absolute;
+            z-index: 2147483646;
+            transform: translate(-50%, -100%);
+            margin-top: -15px;
+            padding: 4px 8px;
+            border-radius: 9px;
+            background: #faaf14;
+            color: #070706;
+            font: 12px/1.2 sans-serif;
+            font-weight: bold;
+            white-space: nowrap;
+            pointer-events: none;
+        }
+        #draw-cursor[hidden], #draw-cursor-stem[hidden], #draw-cursor-badge[hidden] { display: none; }
     </style>
     <script>
         window._AMapSecurityConfig = { securityJsCode: '__AMAP_SECURITY_CODE__' };
@@ -47,6 +113,10 @@
     <span id="map-status-text">地图加载中…</span>
     <button id="map-retry" type="button" onclick="window.location.reload()">重新加载</button>
 </div>
+<div id="draw-tip" hidden></div>
+<div id="draw-cursor-stem" hidden></div>
+<div id="draw-cursor" hidden></div>
+<div id="draw-cursor-badge" hidden>起点预览</div>
 <script>
     (function () {
         var map = null;
@@ -54,10 +124,22 @@
         var routePolyline = null;
         var routeMarkers = [];
         var drawingEnabled = false;
+        var drawingPicking = false;
         var drawingActive = false;
         var drawingPath = [];
         var drawingLastPixel = null;
         var drawingPreview = null;
+        var drawingTouching = false;
+        var drawingTouchLast = null;
+        var drawingPanPendingX = 0;
+        var drawingPanPendingY = 0;
+        var drawingPanFrame = null;
+        var drawingFinishTimer = null;
+        var drawingCursor = null;
+        var drawingCursorStem = null;
+        var drawingCursorBadge = null;
+        var drawingCursorAnchor = null;
+        var drawingTouchOffset = null;
         var applyingCenter = false;
         var readyReported = false;
 
@@ -74,6 +156,115 @@
         function hideStatus() {
             var status = document.getElementById('map-status');
             if (status) status.hidden = true;
+        }
+
+        function showDrawTip(message) {
+            var tip = document.getElementById('draw-tip');
+            if (!tip) return;
+            tip.textContent = message || '';
+            tip.hidden = !message;
+        }
+
+        function hideDrawingCursor() {
+            if (drawingCursor) drawingCursor.hidden = true;
+            if (drawingCursorStem) drawingCursorStem.hidden = true;
+            if (drawingCursorBadge) drawingCursorBadge.hidden = true;
+            drawingCursorAnchor = null;
+            drawingTouchOffset = null;
+            drawingTouching = false;
+            drawingTouchLast = null;
+            drawingPanPendingX = 0;
+            drawingPanPendingY = 0;
+            if (drawingPanFrame != null) {
+                if (window.cancelAnimationFrame) window.cancelAnimationFrame(drawingPanFrame);
+                else window.clearTimeout(drawingPanFrame);
+                drawingPanFrame = null;
+            }
+            if (drawingFinishTimer) {
+                window.clearTimeout(drawingFinishTimer);
+                drawingFinishTimer = null;
+            }
+        }
+
+        function drawingTouchPosition(event) {
+            var touch = event && event.touches && event.touches.length
+                ? event.touches[0] : event;
+            var container = document.getElementById('map');
+            if (!touch || !container) return null;
+            var rect = container.getBoundingClientRect();
+            var touchX = Number(touch.clientX) - rect.left;
+            var touchY = Number(touch.clientY) - rect.top;
+            if (!isFinite(touchX) || !isFinite(touchY)
+                    || rect.width <= 0 || rect.height <= 0) return null;
+            var offsetX = drawingTouchOffset ? drawingTouchOffset.x : 0;
+            var offsetY = drawingTouchOffset ? drawingTouchOffset.y : 58;
+            var cursorX = touchX - offsetX;
+            var cursorY = touchY - offsetY;
+            if (!drawingTouchOffset) {
+                if (cursorY < 32) cursorY = touchY + offsetY;
+                // Keep the target below the native title bar when the finger is near the top.
+                var topSafe = Math.min(88, rect.height * 0.12);
+                if (cursorY < topSafe && touchY > topSafe) cursorY = touchY + offsetY;
+            }
+            cursorX = Math.max(18, Math.min(rect.width - 18, cursorX));
+            cursorY = Math.max(18, Math.min(rect.height - 18, cursorY));
+            return {
+                touchX: touchX,
+                touchY: touchY,
+                cursorX: cursorX,
+                cursorY: cursorY,
+                rect: rect
+            };
+        }
+
+        function updateDrawingCursor(position) {
+            if (!position) return;
+            if (!drawingCursor) drawingCursor = document.getElementById('draw-cursor');
+            if (!drawingCursorStem) drawingCursorStem = document.getElementById('draw-cursor-stem');
+            if (!drawingCursorBadge) drawingCursorBadge = document.getElementById('draw-cursor-badge');
+            if (!drawingCursor || !drawingCursorStem) return;
+            drawingCursor.style.left = position.cursorX + 'px';
+            drawingCursor.style.top = position.cursorY + 'px';
+            if (drawingCursorBadge) {
+                drawingCursorBadge.style.left = position.cursorX + 'px';
+                drawingCursorBadge.style.top = position.cursorY + 'px';
+            }
+            var dx = position.cursorX - position.touchX;
+            var dy = position.cursorY - position.touchY;
+            var distance = Math.sqrt(dx * dx + dy * dy);
+            drawingCursorStem.style.left = position.touchX + 'px';
+            drawingCursorStem.style.top = position.touchY + 'px';
+            drawingCursorStem.style.width = Math.max(0, distance - 13) + 'px';
+            drawingCursorStem.style.transform = 'rotate(' + Math.atan2(dy, dx) + 'rad)';
+            drawingCursor.hidden = false;
+            drawingCursorStem.hidden = false;
+        }
+
+        function primeDrawingCursor() {
+            var container = document.getElementById('map');
+            if (!container) return;
+            var rect = container.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) return;
+            if (!drawingCursor) drawingCursor = document.getElementById('draw-cursor');
+            if (!drawingCursorStem) drawingCursorStem = document.getElementById('draw-cursor-stem');
+            if (!drawingCursorBadge) drawingCursorBadge = document.getElementById('draw-cursor-badge');
+            if (!drawingCursor || !drawingCursorStem) return;
+            var anchorX = rect.width / 2;
+            // Keep the origin in the visible map area above the native route panel.
+            var safeAnchorY = rect.height * 0.42;
+            var anchorY = safeAnchorY;
+            drawingCursorAnchor = { x: anchorX, y: anchorY };
+            drawingCursor.style.left = anchorX + 'px';
+            drawingCursor.style.top = anchorY + 'px';
+            drawingCursor.classList.toggle('pick-mode', !!drawingPicking);
+            drawingCursor.hidden = false;
+            drawingCursorStem.hidden = true;
+            if (drawingCursorBadge) {
+                drawingCursorBadge.style.left = anchorX + 'px';
+                drawingCursorBadge.style.top = anchorY + 'px';
+                drawingCursorBadge.textContent = drawingPicking ? '起点预览' : '实际起点';
+                drawingCursorBadge.hidden = false;
+            }
         }
 
         function updateCoverageStatus(latitude, longitude) {
@@ -126,6 +317,21 @@
             if (map) map.zoomOut();
         };
 
+        window.fitRoute = function () {
+            if (!map) return;
+            var overlays = [];
+            if (routePolyline) overlays.push(routePolyline);
+            for (var index = 0; index < routeMarkers.length; index++) {
+                overlays.push(routeMarkers[index]);
+            }
+            if (overlays.length > 1 && typeof map.setFitView === 'function') {
+                map.setFitView(overlays, false, [64, 64, 360, 64], 18);
+            } else if (routeMarkers.length === 1 && routeMarkers[0]) {
+                var position = routeMarkers[0].getPosition();
+                if (position) map.setCenter(position, false, 260);
+            }
+        };
+
         window.resumeMap = function () {
             if (map && typeof map.resize === 'function') map.resize();
         };
@@ -144,6 +350,7 @@
 
         window.setDrawingEnabled = function (enabled) {
             drawingEnabled = !!enabled;
+            drawingPicking = false;
             drawingActive = false;
             drawingPath = [];
             drawingLastPixel = null;
@@ -151,35 +358,141 @@
                 map.remove(drawingPreview);
                 drawingPreview = null;
             }
+            showDrawTip('');
+            hideDrawingCursor();
             if (map && typeof map.setStatus === 'function') {
                 map.setStatus({
-                    dragEnable: !drawingEnabled,
-                    zoomEnable: !drawingEnabled,
-                    doubleClickZoom: !drawingEnabled
+                    // We pan the map in the inverse direction ourselves so the
+                    // route follows the user's finger under the fixed cursor.
+                    dragEnable: false,
+                    zoomEnable: false,
+                    doubleClickZoom: false
                 });
             }
             var container = document.getElementById('map');
             if (container) container.style.touchAction = drawingEnabled ? 'none' : 'auto';
+            if (drawingEnabled) primeDrawingCursor();
         };
 
-        function drawingPointFromTouch(event) {
-            var touch = event && event.touches && event.touches.length
-                ? event.touches[0] : event;
+        window.setDrawingPicking = function (enabled) {
+            drawingPicking = !!enabled;
+            if (!drawingPicking && drawingEnabled) {
+                // The map is already in center-lock drawing mode. Do not let a
+                // late initialization callback hide the active cursor.
+                if (drawingCursor) drawingCursor.classList.remove('pick-mode');
+                if (drawingCursorBadge) {
+                    drawingCursorBadge.textContent = '实际起点';
+                    drawingCursorBadge.hidden = false;
+                }
+                if (map && typeof map.setStatus === 'function') {
+                    map.setStatus({
+                        dragEnable: true,
+                        zoomEnable: true,
+                        doubleClickZoom: false
+                    });
+                }
+                return;
+            }
+            drawingEnabled = false;
+            drawingActive = false;
+            drawingPath = [];
+            drawingLastPixel = null;
+            if (drawingPreview && map) {
+                map.remove(drawingPreview);
+                drawingPreview = null;
+            }
+            showDrawTip('');
+            hideDrawingCursor();
+            if (map && typeof map.setStatus === 'function') {
+                map.setStatus({
+                    dragEnable: true,
+                    zoomEnable: true,
+                    doubleClickZoom: true
+                });
+            }
             var container = document.getElementById('map');
-            if (!map || !touch || !container || typeof map.containerToLngLat !== 'function') return null;
-            var rect = container.getBoundingClientRect();
-            var pixelX = Number(touch.clientX) - rect.left;
-            var pixelY = Number(touch.clientY) - rect.top;
-            if (!isFinite(pixelX) || !isFinite(pixelY)) return null;
+            if (container) container.style.touchAction = 'auto';
+            if (drawingPicking) primeDrawingCursor();
+        };
+
+        function drawingPointFromPixel(pixelX, pixelY) {
+            if (!map || !isFinite(pixelX) || !isFinite(pixelY)
+                    || typeof map.containerToLngLat !== 'function') return null;
             var lngLat = map.containerToLngLat(new AMap.Pixel(pixelX, pixelY));
             if (!lngLat || !isFinite(lngLat.lat) || !isFinite(lngLat.lng)) return null;
             return { pixelX: pixelX, pixelY: pixelY, latitude: lngLat.lat, longitude: lngLat.lng };
         }
 
-        function appendDrawingPoint(event) {
-            var point = drawingPointFromTouch(event);
+        function drawingPointFromTouch(event) {
+            var position = drawingTouchPosition(event);
+            updateDrawingCursor(position);
+            if (!position) return null;
+            return drawingPointFromPixel(position.cursorX, position.cursorY);
+        }
+
+        function appendDrawingCenterPoint() {
+            if (!drawingCursorAnchor) return;
+            appendDrawingPixel(drawingCursorAnchor.x, drawingCursorAnchor.y, true);
+        }
+
+        function beginCenterDrawing() {
+            if (!drawingEnabled || drawingActive) return;
+            if (drawingFinishTimer) {
+                window.clearTimeout(drawingFinishTimer);
+                drawingFinishTimer = null;
+            }
+            drawingTouching = true;
+            drawingTouchLast = null;
+            drawingActive = true;
+            drawingPath = [];
+            drawingLastPixel = null;
+            appendDrawingCenterPoint();
+        }
+
+        function flushDrawingPan() {
+            drawingPanFrame = null;
+            if (!drawingEnabled || !drawingActive || !map) {
+                drawingPanPendingX = 0;
+                drawingPanPendingY = 0;
+                return;
+            }
+            var dx = drawingPanPendingX;
+            var dy = drawingPanPendingY;
+            drawingPanPendingX = 0;
+            drawingPanPendingY = 0;
+            if (Math.abs(dx) > 0 || Math.abs(dy) > 0) {
+                // AMap's panBy moves the rendered map in the supplied direction;
+                // invert it so the coordinate under the fixed cursor follows the finger.
+                map.panBy(-dx, -dy, 0);
+            }
+            if (Math.abs(drawingPanPendingX) > 0 || Math.abs(drawingPanPendingY) > 0) {
+                scheduleDrawingPan();
+            }
+        }
+
+        function scheduleDrawingPan() {
+            if (drawingPanFrame != null) return;
+            if (window.requestAnimationFrame) {
+                drawingPanFrame = window.requestAnimationFrame(flushDrawingPan);
+            } else {
+                drawingPanFrame = window.setTimeout(flushDrawingPan, 16);
+            }
+        }
+
+        function queueDrawingPan(dx, dy) {
+            drawingPanPendingX += dx;
+            drawingPanPendingY += dy;
+            scheduleDrawingPan();
+        }
+
+        function appendDrawingPixel(pixelX, pixelY, centerSample) {
+            var point = drawingPointFromPixel(pixelX, pixelY);
             if (!point) return;
-            if (drawingLastPixel) {
+            if (centerSample && drawingPath.length) {
+                var previous = drawingPath[drawingPath.length - 1];
+                if (previous && Math.abs(point.latitude - previous.latitude) < 1e-7
+                        && Math.abs(point.longitude - previous.longitude) < 1e-7) return;
+            } else if (drawingLastPixel) {
                 var dx = point.pixelX - drawingLastPixel.x;
                 var dy = point.pixelY - drawingLastPixel.y;
                 if (Math.sqrt(dx * dx + dy * dy) < 6) return;
@@ -203,9 +516,43 @@
             drawingPreview.setPath(path);
         }
 
+        function appendDrawingPoint(event) {
+            var point = drawingPointFromTouch(event);
+            if (point) appendDrawingPixel(point.pixelX, point.pixelY);
+        }
+
+        function updateEdgeHint(event) {
+            if (!drawingEnabled || !drawingActive || !event) return;
+            var touch = event.touches && event.touches.length ? event.touches[0] : event;
+            var container = document.getElementById('map');
+            if (!touch || !container) return;
+            var rect = container.getBoundingClientRect();
+            var x = Number(touch.clientX) - rect.left;
+            var y = Number(touch.clientY) - rect.top;
+            var edge = 34;
+            if (x <= edge || y <= edge || x >= rect.width - edge || y >= rect.height - edge) {
+                showDrawTip('已到地图边缘，请松手后移动地图，再点击“自绘”继续');
+            } else {
+                showDrawTip('');
+            }
+        }
+
         function finishDrawing() {
             if (!drawingActive) return;
+            drawingTouching = false;
+            if (drawingFinishTimer) {
+                window.clearTimeout(drawingFinishTimer);
+                drawingFinishTimer = null;
+            }
             drawingActive = false;
+            drawingTouchLast = null;
+            drawingPanPendingX = 0;
+            drawingPanPendingY = 0;
+            if (drawingPanFrame != null) {
+                if (window.cancelAnimationFrame) window.cancelAnimationFrame(drawingPanFrame);
+                else window.clearTimeout(drawingPanFrame);
+                drawingPanFrame = null;
+            }
             if (drawingPreview && map) {
                 map.remove(drawingPreview);
                 drawingPreview = null;
@@ -214,8 +561,15 @@
                 var target = bridge('onDrawPath');
                 if (target) target.onDrawPath(JSON.stringify(drawingPath));
             }
+            showDrawTip('');
             drawingPath = [];
             drawingLastPixel = null;
+            // Keep the fixed cursor and drawing mode active so the next drag
+            // starts a new segment from this segment's endpoint.
+            if (drawingCursorBadge) {
+                drawingCursorBadge.textContent = '继续绘制';
+                drawingCursorBadge.hidden = false;
+            }
         }
 
         var mapElement = document.getElementById('map');
@@ -223,24 +577,39 @@
             mapElement.addEventListener('touchstart', function (event) {
                 if (!drawingEnabled) return;
                 event.preventDefault();
-                drawingActive = true;
-                drawingPath = [];
-                drawingLastPixel = null;
-                appendDrawingPoint(event);
+                beginCenterDrawing();
+                var position = drawingTouchPosition(event);
+                if (position) drawingTouchLast = { x: position.touchX, y: position.touchY };
             }, false);
             mapElement.addEventListener('touchmove', function (event) {
                 if (!drawingEnabled || !drawingActive) return;
                 event.preventDefault();
-                appendDrawingPoint(event);
+                var position = drawingTouchPosition(event);
+                if (!position) return;
+                if (!drawingTouchLast) {
+                    drawingTouchLast = { x: position.touchX, y: position.touchY };
+                    return;
+                }
+                var dx = position.touchX - drawingTouchLast.x;
+                var dy = position.touchY - drawingTouchLast.y;
+                drawingTouchLast = { x: position.touchX, y: position.touchY };
+                if (map && (Math.abs(dx) > 0 || Math.abs(dy) > 0)) {
+                    queueDrawingPan(dx, dy);
+                }
             }, false);
             mapElement.addEventListener('touchend', function (event) {
                 if (!drawingEnabled) return;
                 event.preventDefault();
-                finishDrawing();
+                drawingTouching = false;
+                drawingTouchLast = null;
+                // Give the final mapmove/dragend event a chance to append the last point.
+                if (drawingFinishTimer) window.clearTimeout(drawingFinishTimer);
+                drawingFinishTimer = window.setTimeout(finishDrawing, 180);
             }, false);
             mapElement.addEventListener('touchcancel', function (event) {
                 if (!drawingEnabled) return;
                 event.preventDefault();
+                drawingTouchLast = null;
                 finishDrawing();
             }, false);
         }
@@ -362,9 +731,20 @@
                     mapOptions.showIndoorMap = false;
                 }
                 map = new AMap.Map('map', mapOptions);
-                map.on('moveend', emitCenter);
+                map.on('dragstart', beginCenterDrawing);
+                map.on('dragging', function () {
+                    if (drawingEnabled && drawingActive) appendDrawingCenterPoint();
+                });
+                map.on('dragend', finishDrawing);
+                map.on('moveend', function () {
+                    emitCenter();
+                    if (drawingEnabled && drawingActive) appendDrawingCenterPoint();
+                });
+                map.on('mapmove', function () {
+                    if (drawingEnabled && drawingActive) appendDrawingCenterPoint();
+                });
                 map.on('click', function (event) {
-                    if (drawingEnabled) return;
+                    if (drawingEnabled || drawingPicking) return;
                     if (!event || !event.lnglat) return;
                     var target = bridge('onMapTapped');
                     if (target) target.onMapTapped(event.lnglat.lat, event.lnglat.lng);
@@ -372,6 +752,7 @@
                 map.on('complete', reportReady);
                 map.on('tilesloaded', reportReady);
                 window.setDrawingEnabled(drawingEnabled);
+                window.setDrawingPicking(drawingPicking);
             } catch (exception) {
                 showStatus('高德地图初始化失败', true);
                 var error = bridge('onMapError');

@@ -64,31 +64,37 @@ public final class MainActivity extends Activity {
     private static final String LOG_TAG = "DriftLocation";
     private static final int REQUEST_PERMISSIONS = 42;
     private static final int REQUEST_CURRENT_LOCATION = 43;
+    private static final int REQUEST_MAP_SETTINGS = 44;
     private static final long LOCATION_TIMEOUT_MS = 12_000L;
-    private static final int COLOR_BACKGROUND = Color.rgb(15, 23, 42);
-    private static final int COLOR_CARD = Color.rgb(27, 35, 54);
-    private static final int COLOR_MUTED = Color.rgb(39, 47, 66);
-    private static final int COLOR_BORDER = Color.rgb(71, 85, 105);
-    private static final int COLOR_TEXT = Color.rgb(248, 250, 252);
-    private static final int COLOR_SUBTLE = Color.rgb(148, 163, 184);
-    private static final int COLOR_ACCENT = Color.rgb(34, 197, 94);
-    private static final int COLOR_DANGER = Color.rgb(239, 68, 68);
-    private static final int COLOR_DIALOG_SURFACE = Color.WHITE;
-    private static final int COLOR_DIALOG_BUTTON = Color.rgb(241, 245, 249);
-    private static final int COLOR_DIALOG_BORDER = Color.rgb(203, 213, 225);
-    private static final int COLOR_DIALOG_TEXT = Color.rgb(15, 23, 42);
-    private static final int COLOR_DIALOG_SUBTLE = Color.rgb(71, 85, 105);
+    private static final int COLOR_BACKGROUND = Color.rgb(239, 238, 227);
+    private static final int COLOR_CARD = Color.rgb(255, 253, 245);
+    private static final int COLOR_MUTED = Color.rgb(250, 245, 226);
+    private static final int COLOR_BORDER = Color.rgb(7, 7, 6);
+    private static final int COLOR_TEXT = Color.rgb(7, 7, 6);
+    private static final int COLOR_SUBTLE = Color.rgb(76, 92, 94);
+    private static final int COLOR_ACCENT = Color.rgb(250, 175, 20);
+    private static final int COLOR_BLUE = Color.rgb(47, 152, 232);
+    private static final int COLOR_TEAL = Color.rgb(65, 121, 140);
+    private static final int COLOR_DANGER = Color.rgb(232, 74, 38);
+    private static final int COLOR_DIALOG_SURFACE = Color.rgb(255, 253, 245);
+    private static final int COLOR_DIALOG_BUTTON = Color.rgb(250, 245, 226);
+    private static final int COLOR_DIALOG_BORDER = Color.rgb(7, 7, 6);
+    private static final int COLOR_DIALOG_TEXT = Color.rgb(7, 7, 6);
+    private static final int COLOR_DIALOG_SUBTLE = Color.rgb(76, 92, 94);
     private static final int MAP_UPDATE_DELAY_SECONDS = 3;
     private static final long MAP_UPDATE_DELAY_MS = MAP_UPDATE_DELAY_SECONDS * 1_000L;
     private static final String MAP_PREFERENCES = "amap_configuration";
     private static final String KEY_AMAP_PRIVACY_AGREED = "privacy_agreed";
     private static final String KEY_DISCLAIMER_AGREED = "disclaimer_v1_agreed";
-    private static final String UPDATE_MANIFEST_URL =
-            "https://raw.githubusercontent.com/1162107757/mock-location/master/update.json";
+    private static final String[] UPDATE_MANIFEST_URLS = {
+            "https://raw.githubusercontent.com/1162107757/mock-location/main/update.json",
+            "https://raw.githubusercontent.com/1162107757/mock-location/master/update.json"
+    };
+    private static final String UPDATE_CHECK_SCHEMA = "2";
     private static final int UPDATE_TIMEOUT_MS = 8_000;
     private static final int UPDATE_MAX_BYTES = 256 * 1024;
 
-    private static final String DISCLAIMER_TEXT =
+    static final String DISCLAIMER_TEXT =
             "请在使用本软件前仔细阅读本说明。点击“同意并继续”，表示你已经阅读、理解并同意以下内容。\n\n"
                     + "一、软件用途\n"
                     + "本软件仅用于 Android 应用开发、调试、自动化测试和个人设备测试，用于验证应用在不同位置、路线和定位状态下的功能表现。\n"
@@ -124,6 +130,7 @@ public final class MainActivity extends Activity {
     private LocationManager locationManager;
     private LocationListener pendingLocationListener;
     private Runnable locationTimeout;
+    private Location pendingBestLocation;
     private boolean running;
     private boolean rootOnly;
     private boolean rootGranted;
@@ -166,6 +173,13 @@ public final class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         getWindow().setStatusBarColor(COLOR_BACKGROUND);
         getWindow().setNavigationBarColor(COLOR_BACKGROUND);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            int systemUi = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                systemUi |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            }
+            getWindow().getDecorView().setSystemUiVisibility(systemUi);
+        }
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
 
         preferences = LocationContract.openPreferences(this);
@@ -303,10 +317,16 @@ public final class MainActivity extends Activity {
         amapJsApiKey = AmapKeyStore.getJsApiKey(this);
         amapJsSecurityCode = AmapKeyStore.getJsSecurityCode(this);
         if (amapJsApiKey.isEmpty() || amapJsSecurityCode.isEmpty()) {
-            showAmapKeyDialog(true, savedInstanceState);
+            openMapSettings(true);
             return;
         }
         initializeInterface(savedInstanceState);
+    }
+
+    private void openMapSettings(boolean required) {
+        Intent intent = new Intent(this, MapSettingsActivity.class)
+                .putExtra(MapSettingsActivity.EXTRA_REQUIRED, required);
+        startActivityForResult(intent, REQUEST_MAP_SETTINGS);
     }
 
     private void initializeInterface(Bundle savedInstanceState) {
@@ -329,55 +349,74 @@ public final class MainActivity extends Activity {
     }
 
     private void showAmapKeyDialog(boolean required, Bundle savedInstanceState) {
-        EditText keyField = new EditText(this);
-        keyField.setSingleLine(true);
-        keyField.setHint("32 位高德 Web端(JS API) Key");
-        keyField.setSelectAllOnFocus(true);
-        keyField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        keyField.setPadding(dp(24), dp(8), dp(24), dp(8));
-
-        EditText securityCodeField = new EditText(this);
-        securityCodeField.setSingleLine(true);
-        securityCodeField.setHint("高德 JS API 安全密钥（jscode）");
-        securityCodeField.setSelectAllOnFocus(true);
-        securityCodeField.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
-        securityCodeField.setPadding(dp(24), dp(8), dp(24), dp(8));
-
         LinearLayout keyForm = new LinearLayout(this);
         keyForm.setOrientation(LinearLayout.VERTICAL);
-        keyForm.setPadding(0, dp(4), 0, 0);
-        keyForm.addView(keyField, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
+        keyForm.setPadding(dp(20), dp(4), dp(20), dp(6));
+        keyForm.setBackgroundColor(COLOR_DIALOG_SURFACE);
+
+        TextView intro = label("地图显示和地点搜索由高德 Web 端 JS API 提供。", 14,
+                COLOR_DIALOG_SUBTLE, Typeface.NORMAL);
+        intro.setLineSpacing(dp(2), 1f);
+        keyForm.addView(intro, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView sectionTitle = label("服务配置", 12, COLOR_ACCENT, Typeface.BOLD);
+        LinearLayout.LayoutParams sectionParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        sectionParams.topMargin = dp(18);
+        keyForm.addView(sectionTitle, sectionParams);
+
+        EditText keyField = createSettingsSecretField("32 位高德 Web 端（JS API）Key");
+        LinearLayout.LayoutParams keyParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(54));
+        keyParams.topMargin = dp(8);
+        keyForm.addView(keyField, keyParams);
+
+        EditText securityCodeField = createSettingsSecretField("高德 JS API 安全密钥（jscode）");
         LinearLayout.LayoutParams securityParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
-        securityParams.topMargin = dp(8);
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(54));
+        securityParams.topMargin = dp(10);
         keyForm.addView(securityCodeField, securityParams);
 
+        TextView securityHint = label("已保存的密钥不会回显；如需更换，请重新输入。", 12,
+                COLOR_DIALOG_SUBTLE, Typeface.NORMAL);
+        LinearLayout.LayoutParams securityHintParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        securityHintParams.topMargin = dp(8);
+        keyForm.addView(securityHint, securityHintParams);
+
         if (!required) {
-            Button disclaimerButton = createCompactButton("查看免责说明", "查看使用须知与免责说明");
-            disclaimerButton.setTextColor(COLOR_DIALOG_TEXT);
-            disclaimerButton.setBackground(rounded(COLOR_DIALOG_SURFACE, 10,
-                    COLOR_DIALOG_BORDER, 1));
-            LinearLayout.LayoutParams disclaimerParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
-            disclaimerParams.topMargin = dp(10);
-            keyForm.addView(disclaimerButton, disclaimerParams);
+            TextView toolsTitle = label("其他", 12, COLOR_ACCENT, Typeface.BOLD);
+            LinearLayout.LayoutParams toolsTitleParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            toolsTitleParams.topMargin = dp(18);
+            keyForm.addView(toolsTitle, toolsTitleParams);
+
+            LinearLayout toolsRow = new LinearLayout(this);
+            toolsRow.setOrientation(LinearLayout.HORIZONTAL);
+            toolsRow.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout.LayoutParams toolsRowParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
+            toolsRowParams.topMargin = dp(8);
+            keyForm.addView(toolsRow, toolsRowParams);
+
+            Button disclaimerButton = createSettingsUtilityButton("查看免责说明",
+                    "查看使用须知与免责说明");
+            LinearLayout.LayoutParams disclaimerParams = new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1f);
+            toolsRow.addView(disclaimerButton, disclaimerParams);
             disclaimerButton.setTag("disclaimer_review");
 
-            Button aboutButton = createCompactButton("关于与更新", "查看版本并检查更新");
-            aboutButton.setTextColor(COLOR_DIALOG_TEXT);
-            aboutButton.setBackground(rounded(COLOR_DIALOG_SURFACE, 10,
-                    COLOR_DIALOG_BORDER, 1));
-            LinearLayout.LayoutParams aboutParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
-            aboutParams.topMargin = dp(8);
-            keyForm.addView(aboutButton, aboutParams);
+            Button aboutButton = createSettingsUtilityButton("关于与更新", "查看版本并检查更新");
+            LinearLayout.LayoutParams aboutParams = new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1f);
+            aboutParams.leftMargin = dp(10);
+            toolsRow.addView(aboutButton, aboutParams);
             aboutButton.setTag("about_review");
         }
 
         AlertDialog dialog = new AlertDialog.Builder(this)
                 .setTitle(required ? "配置高德 JS API" : "高德地图设置")
-                .setMessage("请在高德控制台创建“Web端(JS API)” Key，并填写对应的安全密钥。保存后应用会重新加载地图。")
                 .setView(keyForm)
                 .setNegativeButton(required ? "退出" : "取消", null)
                 .setNeutralButton("申请 Key", null)
@@ -388,6 +427,7 @@ public final class MainActivity extends Activity {
             if (required) finish();
         });
         dialog.setOnShowListener(ignored -> {
+            styleMapSettingsDialog(dialog, required);
             if (!required) {
                 View disclaimerView = keyForm.findViewWithTag("disclaimer_review");
                 if (disclaimerView != null) {
@@ -437,6 +477,67 @@ public final class MainActivity extends Activity {
         dialog.show();
     }
 
+    private EditText createSettingsSecretField(String hint) {
+        EditText field = new EditText(this);
+        field.setSingleLine(true);
+        field.setHint(hint);
+        field.setTextSize(15);
+        field.setTextColor(COLOR_DIALOG_TEXT);
+        field.setHintTextColor(COLOR_DIALOG_SUBTLE);
+        field.setSelectAllOnFocus(true);
+        field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        field.setPadding(dp(16), 0, dp(16), 0);
+        field.setBackground(rounded(COLOR_DIALOG_BUTTON, 12,
+                COLOR_DIALOG_BORDER, 1));
+        return field;
+    }
+
+    private Button createSettingsUtilityButton(String text, String description) {
+        Button button = new Button(this);
+        button.setText(text);
+        button.setTextSize(13);
+        button.setTextColor(COLOR_DIALOG_TEXT);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setAllCaps(false);
+        button.setMinHeight(0);
+        button.setMinWidth(0);
+        button.setPadding(dp(6), 0, dp(6), 0);
+        button.setContentDescription(description);
+        button.setBackground(rounded(COLOR_DIALOG_BUTTON, 11,
+                COLOR_DIALOG_BORDER, 1));
+        return button;
+    }
+
+    private void styleMapSettingsDialog(AlertDialog dialog, boolean required) {
+        if (dialog == null) return;
+        if (dialog.getWindow() != null) {
+            dialog.getWindow().setBackgroundDrawable(rounded(COLOR_DIALOG_SURFACE, 20,
+                    Color.TRANSPARENT, 0));
+            dialog.getWindow().setDimAmount(0.56f);
+        }
+        Button negative = dialog.getButton(AlertDialog.BUTTON_NEGATIVE);
+        Button neutral = dialog.getButton(AlertDialog.BUTTON_NEUTRAL);
+        Button positive = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+        styleDialogButton(negative, COLOR_DIALOG_SUBTLE, null);
+        styleDialogButton(neutral, COLOR_DIALOG_TEXT,
+                rounded(COLOR_DIALOG_BUTTON, 11, COLOR_DIALOG_BORDER, 2));
+        styleDialogButton(positive, Color.WHITE,
+                rounded(COLOR_ACCENT, 11, COLOR_DIALOG_BORDER, 2));
+        if (required && negative != null) negative.setTextColor(COLOR_DANGER);
+    }
+
+    private void styleDialogButton(Button button, int textColor, GradientDrawable background) {
+        if (button == null) return;
+        button.setAllCaps(false);
+        button.setTextSize(14);
+        button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        button.setTextColor(textColor);
+        button.setMinHeight(dp(42));
+        button.setMinWidth(dp(56));
+        button.setPadding(dp(12), 0, dp(12), 0);
+        if (background != null) button.setBackground(background);
+    }
+
     private void openAmapPrivacyPolicy() {
         openWebPage("https://lbs.amap.com/pages/privacy/");
     }
@@ -459,7 +560,7 @@ public final class MainActivity extends Activity {
         content.setPadding(dp(22), dp(6), dp(22), dp(2));
         content.setBackgroundColor(COLOR_DIALOG_SURFACE);
 
-        TextView versionText = label("Drift Location\n版本 " + BuildConfig.VERSION_NAME
+        TextView versionText = label("Mock Location\n版本 " + BuildConfig.VERSION_NAME
                 + "（versionCode " + BuildConfig.VERSION_CODE + "）\n适配 Android 7.1.2 - Android 16",
                 15, COLOR_DIALOG_TEXT, Typeface.BOLD);
         versionText.setLineSpacing(dp(3), 1f);
@@ -484,10 +585,15 @@ public final class MainActivity extends Activity {
     }
 
     private void scheduleAutomaticUpdateCheck() {
-        long lastCheck = mapPreferences.getLong("last_update_check_at", 0L);
+        String checkSchema = mapPreferences.getString("update_check_schema", "");
+        long lastCheck = UPDATE_CHECK_SCHEMA.equals(checkSchema)
+                ? mapPreferences.getLong("last_update_check_at", 0L) : 0L;
         long now = System.currentTimeMillis();
         if (now - lastCheck < 24L * 60L * 60L * 1_000L) return;
-        mapPreferences.edit().putLong("last_update_check_at", now).apply();
+        mapPreferences.edit()
+                .putString("update_check_schema", UPDATE_CHECK_SCHEMA)
+                .putLong("last_update_check_at", now)
+                .apply();
         mainHandler.postDelayed(() -> performUpdateCheck(null, null, true), 1_500L);
     }
 
@@ -523,14 +629,26 @@ public final class MainActivity extends Activity {
     }
 
     private UpdateInfo fetchUpdateInfo() {
+        UpdateInfo best = null;
+        for (String manifestUrl : UPDATE_MANIFEST_URLS) {
+            UpdateInfo candidate = fetchUpdateInfo(manifestUrl);
+            if (candidate != null && (best == null || candidate.versionCode > best.versionCode)) {
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    private UpdateInfo fetchUpdateInfo(String manifestUrl) {
         HttpURLConnection connection = null;
         try {
-            connection = (HttpURLConnection) new URL(UPDATE_MANIFEST_URL).openConnection();
+            String cacheBust = "v=" + (System.currentTimeMillis() / 60_000L);
+            connection = (HttpURLConnection) new URL(manifestUrl + "?" + cacheBust).openConnection();
             connection.setConnectTimeout(UPDATE_TIMEOUT_MS);
             connection.setReadTimeout(UPDATE_TIMEOUT_MS);
             connection.setInstanceFollowRedirects(true);
             connection.setRequestProperty("Accept", "application/json");
-            connection.setRequestProperty("User-Agent", "DriftLocation/" + BuildConfig.VERSION_NAME);
+            connection.setRequestProperty("User-Agent", "MockLocation/" + BuildConfig.VERSION_NAME);
             int responseCode = connection.getResponseCode();
             if (responseCode < 200 || responseCode >= 300) return null;
             try (InputStream stream = connection.getInputStream();
@@ -773,7 +891,7 @@ public final class MainActivity extends Activity {
         LinearLayout zoomControls = new LinearLayout(this);
         zoomControls.setOrientation(LinearLayout.VERTICAL);
         zoomControls.setPadding(dp(4), dp(4), dp(4), dp(4));
-        zoomControls.setBackground(rounded(COLOR_CARD, 14, COLOR_BORDER, 1));
+        zoomControls.setBackground(rounded(COLOR_CARD, 16, COLOR_BORDER, 2));
         Button zoomIn = createCompactButton("+", "放大地图");
         Button zoomOut = createCompactButton("−", "缩小地图");
         locateButton = createCompactButton("◎", "定位到设备当前位置");
@@ -820,8 +938,8 @@ public final class MainActivity extends Activity {
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setPadding(dp(14), dp(6), dp(6), dp(6));
-        bar.setBackground(rounded(0xF21B2336, 18, COLOR_BORDER, 1));
-        bar.setElevation(dp(8));
+        bar.setBackground(rounded(COLOR_CARD, 20, COLOR_BORDER, 2));
+        bar.setElevation(dp(5));
 
         searchInput = new EditText(this);
         searchInput.setSingleLine(true);
@@ -842,7 +960,7 @@ public final class MainActivity extends Activity {
         });
         bar.addView(searchInput, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
-        Button searchButton = createActionButton("搜索", COLOR_ACCENT, COLOR_BACKGROUND);
+        Button searchButton = createActionButton("搜索", COLOR_ACCENT, COLOR_TEXT);
         searchButton.setContentDescription("搜索地点");
         searchButton.setOnClickListener(view -> searchLocation());
         bar.addView(searchButton, new LinearLayout.LayoutParams(dp(72), dp(44)));
@@ -853,8 +971,8 @@ public final class MainActivity extends Activity {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(dp(18), dp(10), dp(18), dp(16));
-        panel.setBackground(rounded(0xFA1B2336, 24, COLOR_BORDER, 1));
-        panel.setElevation(dp(12));
+        panel.setBackground(rounded(COLOR_CARD, 24, COLOR_BORDER, 2));
+        panel.setElevation(dp(8));
 
         View handle = new View(this);
         handle.setBackground(rounded(COLOR_BORDER, 2, Color.TRANSPARENT, 0));
@@ -889,9 +1007,11 @@ public final class MainActivity extends Activity {
         LinearLayout utilityRow = new LinearLayout(this);
         utilityRow.setOrientation(LinearLayout.HORIZONTAL);
         Button historyButton = createCompactButton("历史位置", "查看模拟过的位置");
+        historyButton.setBackground(rounded(Color.rgb(255, 250, 230), 13, COLOR_BORDER, 2));
         historyButton.setOnClickListener(view -> showHistoryDialog());
         utilityRow.addView(historyButton, new LinearLayout.LayoutParams(0, dp(42), 1f));
         Button trajectoryButton = createCompactButton("轨迹模拟", "打开轨迹模拟功能");
+        trajectoryButton.setBackground(rounded(Color.rgb(232, 243, 255), 13, COLOR_BORDER, 2));
         trajectoryButton.setOnClickListener(view -> {
             try {
                 startActivity(new Intent(this, TrajectoryActivity.class));
@@ -903,7 +1023,8 @@ public final class MainActivity extends Activity {
         trajectoryParams.leftMargin = dp(8);
         utilityRow.addView(trajectoryButton, trajectoryParams);
         Button mapSettingsButton = createCompactButton("地图设置", "配置高德地图 Key");
-        mapSettingsButton.setOnClickListener(view -> showAmapKeyDialog(false, null));
+        mapSettingsButton.setBackground(rounded(Color.rgb(255, 238, 231), 13, COLOR_BORDER, 2));
+        mapSettingsButton.setOnClickListener(view -> openMapSettings(false));
         LinearLayout.LayoutParams mapSettingsParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
         mapSettingsParams.leftMargin = dp(8);
         utilityRow.addView(mapSettingsButton, mapSettingsParams);
@@ -915,13 +1036,13 @@ public final class MainActivity extends Activity {
         LinearLayout actionRow = new LinearLayout(this);
         actionRow.setOrientation(LinearLayout.HORIZONTAL);
         actionRow.setPadding(0, dp(12), 0, 0);
-        setupButton = createActionButton("Root 模式", COLOR_MUTED, COLOR_TEXT);
+        setupButton = createActionButton("Root 模式", COLOR_TEAL, Color.WHITE);
         setupButton.setOnClickListener(view -> showSetupOptions());
         LinearLayout.LayoutParams setupParams = new LinearLayout.LayoutParams(0, dp(52), 0.9f);
         setupParams.rightMargin = dp(10);
         actionRow.addView(setupButton, setupParams);
 
-        startButton = createActionButton("开始模拟", COLOR_ACCENT, COLOR_BACKGROUND);
+        startButton = createActionButton("开始模拟", COLOR_ACCENT, COLOR_TEXT);
         startButton.setOnClickListener(view -> {
             if (running) {
                 cancelPendingMapLocationUpdate();
@@ -949,7 +1070,7 @@ public final class MainActivity extends Activity {
         if (!rootOnly && !isSelectedMockLocationApp()) {
             new AlertDialog.Builder(this)
                     .setTitle("需要完成一次系统设置")
-                    .setMessage("可以在开发者选项中选择 Drift Location，也可以在连接设备的电脑上执行 ADB 授权命令。授权后返回本应用即可开始。")
+                    .setMessage("可以在开发者选项中选择 Mock Location，也可以在连接设备的电脑上执行 ADB 授权命令。授权后返回本应用即可开始。")
                     .setNegativeButton("稍后", null)
                     .setNeutralButton("ADB 无 Root", (dialog, which) -> showAdbAuthorizationDialog())
                     .setPositiveButton("打开设置", (dialog, which) -> openDeveloperSettings())
@@ -1026,7 +1147,7 @@ public final class MainActivity extends Activity {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
                 ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
                 if (clipboard != null) {
-                    clipboard.setPrimaryClip(ClipData.newPlainText("Drift Location ADB 授权命令", command));
+                clipboard.setPrimaryClip(ClipData.newPlainText("Mock Location ADB 授权命令", command));
                     Toast.makeText(this, "命令已复制，请粘贴到电脑终端执行", Toast.LENGTH_LONG).show();
                 }
             });
@@ -1164,14 +1285,16 @@ public final class MainActivity extends Activity {
         locateButton.setText("…");
 
         Location cached = bestLastKnownLocation();
-        if (cached != null && System.currentTimeMillis() - cached.getTime() < 120_000L) {
+        pendingBestLocation = cached;
+        if (isRecentUsableLocation(cached)) {
             showDeviceLocation(cached);
             return;
         }
 
         locationTimeout = () -> {
             try {
-                Location fallback = bestLastKnownLocation();
+                Location fallback = pendingBestLocation != null
+                        ? pendingBestLocation : bestLastKnownLocation();
                 finishLocationRequest();
                 if (fallback != null) {
                     showDeviceLocation(fallback);
@@ -1184,13 +1307,24 @@ public final class MainActivity extends Activity {
                 Toast.makeText(this, "暂时无法获取当前位置，请确认系统定位已开启", Toast.LENGTH_LONG).show();
             }
         };
+        // Keep listening for the full timeout when the cached fix is weak. In the
+        // virtual device a GPS fix can take several seconds to arrive, while the
+        // network provider often reports a 400–500 m estimate first.
         mainHandler.postDelayed(locationTimeout, LOCATION_TIMEOUT_MS);
 
         try {
             pendingLocationListener = location -> {
                 if (!isFinishing() && location != null && !isMockLocation(location)) {
-                    finishLocationRequest();
-                    showDeviceLocation(location);
+                    if (isBetterLocation(location, pendingBestLocation)) {
+                        pendingBestLocation = location;
+                    }
+                    // A good GPS fix is safe to apply immediately. Otherwise keep
+                    // sampling briefly so a stale network/fused result cannot win.
+                    if (isHighConfidenceLocation(location)) {
+                        Location best = pendingBestLocation;
+                        finishLocationRequest();
+                        showDeviceLocation(best == null ? location : best);
+                    }
                 }
             };
             boolean registered = false;
@@ -1209,10 +1343,12 @@ public final class MainActivity extends Activity {
                 throw new IllegalStateException("没有可用的定位服务");
             }
         } catch (RuntimeException exception) {
-            finishLocationRequest();
-            if (cached != null) {
-                showDeviceLocation(cached);
+            if (pendingBestLocation != null) {
+                Location fallback = pendingBestLocation;
+                finishLocationRequest();
+                showDeviceLocation(fallback);
             } else {
+                finishLocationRequest();
                 Toast.makeText(this, "无法获取当前位置，请确认系统定位已开启", Toast.LENGTH_LONG).show();
             }
         }
@@ -1230,11 +1366,42 @@ public final class MainActivity extends Activity {
             try {
                 Location candidate = locationManager.getLastKnownLocation(provider);
                 if (candidate == null || isMockLocation(candidate)) continue;
-                if (best == null || candidate.getTime() > best.getTime()) best = candidate;
+                if (isBetterLocation(candidate, best)) best = candidate;
             } catch (RuntimeException ignored) {
             }
         }
         return best;
+    }
+
+    private boolean isHighConfidenceLocation(Location location) {
+        if (location == null || !Double.isFinite(location.getLatitude())
+                || !Double.isFinite(location.getLongitude())) return false;
+        float accuracy = location.getAccuracy();
+        long age = Math.max(0L, System.currentTimeMillis() - location.getTime());
+        return accuracy > 0f && accuracy <= 25f && age <= 30_000L;
+    }
+
+    private boolean isRecentUsableLocation(Location location) {
+        if (location == null || !Double.isFinite(location.getLatitude())
+                || !Double.isFinite(location.getLongitude())) return false;
+        float accuracy = location.getAccuracy();
+        long age = Math.max(0L, System.currentTimeMillis() - location.getTime());
+        return accuracy > 0f && accuracy <= 100f && age <= 120_000L;
+    }
+
+    private boolean isBetterLocation(Location candidate, Location current) {
+        if (candidate == null) return false;
+        if (current == null) return true;
+        long timeDelta = candidate.getTime() - current.getTime();
+        if (timeDelta > 120_000L) return true;
+        if (timeDelta < -120_000L) return false;
+        float candidateAccuracy = candidate.getAccuracy() > 0f
+                ? candidate.getAccuracy() : Float.MAX_VALUE;
+        float currentAccuracy = current.getAccuracy() > 0f
+                ? current.getAccuracy() : Float.MAX_VALUE;
+        if (candidateAccuracy + 5f < currentAccuracy) return true;
+        if (currentAccuracy + 5f < candidateAccuracy) return false;
+        return timeDelta > 0L;
     }
 
     private void showDeviceLocation(Location location) {
@@ -1278,6 +1445,7 @@ public final class MainActivity extends Activity {
             }
             pendingLocationListener = null;
         }
+        pendingBestLocation = null;
         if (locateButton != null) {
             locateButton.setEnabled(true);
             locateButton.setText("◎");
@@ -1299,6 +1467,22 @@ public final class MainActivity extends Activity {
             } else {
                 Toast.makeText(this, "需要位置权限才能获取当前位置", Toast.LENGTH_LONG).show();
             }
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_MAP_SETTINGS) return;
+        String key = AmapKeyStore.getJsApiKey(this);
+        String securityCode = AmapKeyStore.getJsSecurityCode(this);
+        if (!key.isEmpty() && !securityCode.isEmpty()) {
+            amapJsApiKey = key;
+            amapJsSecurityCode = securityCode;
+            if (interfaceInitialized) recreate();
+            else initializeInterface(null);
+        } else if (!interfaceInitialized) {
+            finish();
         }
     }
 
@@ -1347,11 +1531,13 @@ public final class MainActivity extends Activity {
     private void renderState(String message) {
         preferences.edit().putBoolean(LocationContract.KEY_RUNNING, running).apply();
         statusText.setText(running ? "● 运行中" : "● 未运行");
-        statusText.setTextColor(running ? COLOR_ACCENT : COLOR_SUBTLE);
-        statusText.setBackground(rounded(running ? 0x3322C55E : COLOR_MUTED, 14, running ? COLOR_ACCENT : COLOR_BORDER, 1));
+        statusText.setTextColor(running ? COLOR_BLUE : COLOR_SUBTLE);
+        statusText.setBackground(rounded(running ? Color.rgb(232, 244, 255) : COLOR_MUTED,
+                14, running ? COLOR_BLUE : COLOR_BORDER, 2));
         startButton.setText(running ? "停止模拟" : "开始模拟");
-        startButton.setTextColor(running ? Color.WHITE : COLOR_BACKGROUND);
-        startButton.setBackground(rounded(running ? COLOR_DANGER : COLOR_ACCENT, 15, Color.TRANSPARENT, 0));
+        startButton.setTextColor(running ? Color.WHITE : COLOR_TEXT);
+        startButton.setBackground(rounded(running ? COLOR_DANGER : COLOR_ACCENT, 15,
+                COLOR_BORDER, 2));
         String setupLabel;
         if (rootOnly && rootGranted) {
             setupLabel = "Root 模式已配置";
@@ -1416,8 +1602,8 @@ public final class MainActivity extends Activity {
     private void renderLocationUpdateCountdown(int secondsRemaining) {
         if (statusText == null) return;
         statusText.setText("● " + secondsRemaining + "秒后更新到此地址");
-        statusText.setTextColor(COLOR_ACCENT);
-        statusText.setBackground(rounded(0x3322C55E, 14, COLOR_ACCENT, 1));
+        statusText.setTextColor(COLOR_BLUE);
+        statusText.setBackground(rounded(Color.rgb(232, 244, 255), 14, COLOR_BLUE, 2));
     }
 
     private void cancelPendingMapLocationUpdate() {
@@ -1678,14 +1864,14 @@ public final class MainActivity extends Activity {
         button.setMinHeight(dp(44));
         button.setMinWidth(dp(44));
         button.setPadding(dp(12), 0, dp(12), 0);
-        button.setBackground(rounded(background, 15, Color.TRANSPARENT, 0));
+        button.setBackground(rounded(background, 15, COLOR_BORDER, 2));
         return button;
     }
 
     private Button createCompactButton(String text, String description) {
         Button button = createActionButton(text, COLOR_MUTED, COLOR_TEXT);
         button.setContentDescription(description);
-        button.setBackground(rounded(COLOR_MUTED, 12, COLOR_BORDER, 1));
+        button.setBackground(rounded(COLOR_MUTED, 12, COLOR_BORDER, 2));
         button.setPadding(dp(4), 0, dp(4), 0);
         return button;
     }

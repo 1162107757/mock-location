@@ -450,7 +450,7 @@ public final class MockLocationService extends Service {
                 : String.format(Locale.US, "固定位置 %.5f, %.5f", latitude, longitude);
         return builder
                 .setSmallIcon(R.drawable.ic_launcher)
-                .setContentTitle(rootOnly ? "Drift Location · Root 增强" : "Drift Location 正在运行")
+                .setContentTitle(rootOnly ? "Mock Location · Root 增强" : "Mock Location 正在运行")
                 .setContentText(content)
                 .setContentIntent(openPendingIntent)
                 .setOngoing(true)
@@ -520,7 +520,7 @@ public final class MockLocationService extends Service {
     private String permissionFailureMessage() {
         return rootOnly
                 ? "Root Mock Location 权限未生效，请重新授予 Root 权限"
-                : "未获得模拟位置权限，请在开发者选项中选择 Drift Location";
+                : "未获得模拟位置权限，请在开发者选项中选择 Mock Location";
     }
 
     @Override

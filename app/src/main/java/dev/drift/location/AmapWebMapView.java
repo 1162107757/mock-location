@@ -73,6 +73,7 @@ final class AmapWebMapView extends FrameLayout {
     private boolean destroyed;
     private String pendingRouteJson;
     private boolean pendingDrawingEnabled;
+    private boolean pendingDrawingPicking;
 
     @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
     AmapWebMapView(Context context, String apiKey, String securityCode) {
@@ -158,11 +159,18 @@ final class AmapWebMapView extends FrameLayout {
         if (mapReady) evaluate("setDrawingEnabled(" + (enabled ? "true" : "false") + ")");
     }
 
+    void setDrawingPicking(boolean enabled) {
+        pendingDrawingPicking = enabled;
+        if (mapReady) evaluate("setDrawingPicking(" + (enabled ? "true" : "false") + ")");
+    }
+
     void setCenter(double latitude, double longitude) {
         centerLatitude = clamp(latitude, -85.0d, 85.0d);
         centerLongitude = clamp(longitude, -180.0d, 180.0d);
         if (mapReady) {
-            evaluate("setCenter(" + number(centerLatitude) + "," + number(centerLongitude)
+            CoordinateTransform.Coordinate gcj02 = CoordinateTransform.wgs84ToGcj02(
+                    centerLatitude, centerLongitude);
+            evaluate("setCenter(" + number(gcj02.latitude) + "," + number(gcj02.longitude)
                     + "," + number(zoom) + ")");
         }
         notifyCenterChanged();
@@ -182,6 +190,10 @@ final class AmapWebMapView extends FrameLayout {
 
     void zoomOut() {
         if (mapReady) evaluate("zoomOut()");
+    }
+
+    void fitRoute() {
+        if (mapReady) evaluate("fitRoute()");
     }
 
     void zoomToAtLeast(int targetZoom) {
@@ -315,12 +327,15 @@ final class AmapWebMapView extends FrameLayout {
             mainHandler.post(() -> {
                 if (destroyed) return;
                 mapReady = true;
-                evaluate("setCenter(" + number(centerLatitude) + "," + number(centerLongitude)
+                CoordinateTransform.Coordinate gcj02 = CoordinateTransform.wgs84ToGcj02(
+                        centerLatitude, centerLongitude);
+                evaluate("setCenter(" + number(gcj02.latitude) + "," + number(gcj02.longitude)
                         + "," + number(zoom) + ")");
                 if (pendingRouteJson != null) {
                     evaluate("setRoute(" + JSONObject.quote(pendingRouteJson) + ")");
                 }
                 evaluate("setDrawingEnabled(" + (pendingDrawingEnabled ? "true" : "false") + ")");
+                evaluate("setDrawingPicking(" + (pendingDrawingPicking ? "true" : "false") + ")");
             });
         }
 

@@ -42,19 +42,23 @@ import java.util.concurrent.Executors;
 /** Independent route editor and playback screen. The existing home screen remains fixed-location only. */
 public final class TrajectoryActivity extends Activity {
     private static final int REQUEST_PERMISSIONS = 71;
-    private static final int COLOR_BACKGROUND = Color.rgb(15, 23, 42);
-    private static final int COLOR_CARD = Color.rgb(27, 35, 54);
-    private static final int COLOR_MUTED = Color.rgb(39, 47, 66);
-    private static final int COLOR_BORDER = Color.rgb(71, 85, 105);
-    private static final int COLOR_TEXT = Color.rgb(248, 250, 252);
-    private static final int COLOR_SUBTLE = Color.rgb(148, 163, 184);
-    private static final int COLOR_ACCENT = Color.rgb(34, 197, 94);
-    private static final int COLOR_DANGER = Color.rgb(239, 68, 68);
+    private static final int COLOR_BACKGROUND = Color.rgb(239, 238, 227);
+    private static final int COLOR_CARD = Color.rgb(255, 253, 245);
+    private static final int COLOR_MUTED = Color.rgb(250, 245, 226);
+    private static final int COLOR_BORDER = Color.rgb(7, 7, 6);
+    private static final int COLOR_TEXT = Color.rgb(7, 7, 6);
+    private static final int COLOR_SUBTLE = Color.rgb(76, 92, 94);
+    private static final int COLOR_ACCENT = Color.rgb(250, 175, 20);
+    private static final int COLOR_BLUE = Color.rgb(47, 152, 232);
+    private static final int COLOR_TEAL = Color.rgb(65, 121, 140);
+    private static final int COLOR_DANGER = Color.rgb(232, 74, 38);
 
     private final ArrayList<AmapWebMapView.RoutePoint> routePoints = new ArrayList<>();
+    private final ArrayList<ArrayList<AmapWebMapView.RoutePoint>> drawnSegments = new ArrayList<>();
     private SharedPreferences preferences;
     private AmapWebMapView mapView;
     private TextView routeSummary;
+    private TextView routeHint;
     private TextView playbackStatus;
     private TextView speedText;
     private Button startButton;
@@ -64,10 +68,15 @@ public final class TrajectoryActivity extends Activity {
     private Button endPointButton;
     private Button viaPointButton;
     private Button drawButton;
+    private Button fitRouteButton;
+    private Button undoSegmentButton;
+    private final ArrayList<Button> speedButtons = new ArrayList<>();
+    private Button customSpeedButton;
     private boolean running;
     private boolean paused;
     private boolean loop;
     private boolean drawingMode;
+    private boolean drawingPicking;
     private int selectionMode = 1;
     private float speedKmh = 5f;
     private boolean receiverRegistered;
@@ -110,6 +119,13 @@ public final class TrajectoryActivity extends Activity {
         super.onCreate(savedInstanceState);
         getWindow().setStatusBarColor(COLOR_BACKGROUND);
         getWindow().setNavigationBarColor(COLOR_BACKGROUND);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            int systemUi = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                systemUi |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+            }
+            getWindow().getDecorView().setSystemUiVisibility(systemUi);
+        }
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         preferences = LocationContract.openPreferences(this);
         setContentView(buildInterface());
@@ -139,7 +155,7 @@ public final class TrajectoryActivity extends Activity {
         LinearLayout topBar = new LinearLayout(this);
         topBar.setGravity(Gravity.CENTER_VERTICAL);
         topBar.setPadding(dp(6), dp(4), dp(6), dp(4));
-        topBar.setBackground(rounded(0xF01B2336, 16, COLOR_BORDER, 1));
+        topBar.setBackground(rounded(COLOR_CARD, 18, COLOR_BORDER, 2));
         Button backButton = compactButton("‹", "返回首页");
         backButton.setTextSize(28);
         backButton.setOnClickListener(view -> finish());
@@ -150,14 +166,16 @@ public final class TrajectoryActivity extends Activity {
         Button clearButton = compactButton("清空", "清空轨迹点");
         clearButton.setOnClickListener(view -> clearRoute());
         topBar.addView(clearButton, new LinearLayout.LayoutParams(dp(58), dp(42)));
-        root.addView(topBar, frameParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(52),
-                Gravity.TOP, 14, 14, 14, 0));
+        FrameLayout.LayoutParams topBarParams = frameParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52),
+                Gravity.TOP, 14, 14, 14, 0);
+        root.addView(topBar, topBarParams);
 
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(dp(18), dp(9), dp(18), dp(14));
-        panel.setBackground(rounded(0xFA1B2336, 22, COLOR_BORDER, 1));
-        panel.setElevation(dp(12));
+        panel.setBackground(rounded(COLOR_CARD, 22, COLOR_BORDER, 2));
+        panel.setElevation(dp(8));
 
         View handle = new View(this);
         handle.setBackground(rounded(COLOR_BORDER, 2, Color.TRANSPARENT, 0));
@@ -176,7 +194,7 @@ public final class TrajectoryActivity extends Activity {
         routeHeader.addView(routeSummary, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         panel.addView(routeHeader);
 
-        TextView routeHint = label("选择点位类型，或切换自绘后按住地图拖动", 11, COLOR_SUBTLE, Typeface.NORMAL);
+        routeHint = label("选择点位类型；自绘时蓝色准星就是实际落点", 11, COLOR_SUBTLE, Typeface.NORMAL);
         routeHint.setPadding(dp(42), 0, 0, dp(7));
         panel.addView(routeHint);
 
@@ -185,7 +203,7 @@ public final class TrajectoryActivity extends Activity {
         startPointButton = compactButton("起点", "设置起点");
         endPointButton = compactButton("终点", "设置终点");
         viaPointButton = compactButton("途经点", "增加途经点");
-        drawButton = compactButton("自绘", "按住地图拖动绘制线路");
+        drawButton = compactButton("自绘", "确认起点后拖动地图绘制线路");
         startPointButton.setOnClickListener(view -> {
             disableDrawingMode();
             setSelectionMode(0);
@@ -211,6 +229,21 @@ public final class TrajectoryActivity extends Activity {
         modeRow.addView(drawButton, drawParams);
         panel.addView(modeRow);
 
+        LinearLayout segmentTools = new LinearLayout(this);
+        segmentTools.setOrientation(LinearLayout.HORIZONTAL);
+        fitRouteButton = compactButton("查看全线", "将地图缩放到完整线路");
+        fitRouteButton.setOnClickListener(view -> mapView.fitRoute());
+        segmentTools.addView(fitRouteButton, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        undoSegmentButton = compactButton("撤销上一段", "撤销最近绘制的线路段");
+        undoSegmentButton.setOnClickListener(view -> undoLastSegment());
+        LinearLayout.LayoutParams undoParams = new LinearLayout.LayoutParams(0, dp(38), 1f);
+        undoParams.leftMargin = dp(7);
+        segmentTools.addView(undoSegmentButton, undoParams);
+        LinearLayout.LayoutParams toolsParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(38));
+        toolsParams.topMargin = dp(7);
+        panel.addView(segmentTools, toolsParams);
+
         LinearLayout speedHeader = new LinearLayout(this);
         speedHeader.setGravity(Gravity.CENTER_VERTICAL);
         TextView speedCaption = label("播放速度", 12, COLOR_SUBTLE, Typeface.BOLD);
@@ -233,6 +266,7 @@ public final class TrajectoryActivity extends Activity {
         addSpeedButton(speedRow, "骑行", 20f);
         addSpeedButton(speedRow, "驾车", 60f);
         Button customSpeed = compactButton("自定义", "自定义速度");
+        customSpeedButton = customSpeed;
         customSpeed.setOnClickListener(view -> showSpeedDialog());
         LinearLayout.LayoutParams customParams = new LinearLayout.LayoutParams(dp(74), dp(40));
         customParams.leftMargin = dp(6);
@@ -243,6 +277,7 @@ public final class TrajectoryActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(40));
         speedScrollParams.topMargin = dp(2);
         panel.addView(speedScroll, speedScrollParams);
+        selectSpeedButton(speedKmh == 5f ? speedButtons.get(0) : customSpeedButton);
 
         LinearLayout optionRow = new LinearLayout(this);
         optionRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -262,7 +297,7 @@ public final class TrajectoryActivity extends Activity {
         playbackStatus = label("未运行", 12, COLOR_SUBTLE, Typeface.NORMAL);
         playbackStatus.setGravity(Gravity.CENTER_VERTICAL);
         playbackStatus.setPadding(dp(12), 0, dp(12), 0);
-        playbackStatus.setBackground(rounded(0x33273346, 13, COLOR_BORDER, 1));
+        playbackStatus.setBackground(rounded(Color.rgb(232, 244, 255), 13, COLOR_BLUE, 2));
         LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(48));
         statusParams.topMargin = dp(6);
@@ -273,7 +308,7 @@ public final class TrajectoryActivity extends Activity {
         pauseButton = compactButton("暂停", "暂停轨迹");
         pauseButton.setOnClickListener(view -> togglePause());
         actionRow.addView(pauseButton, new LinearLayout.LayoutParams(0, dp(50), 0.72f));
-        startButton = createActionButton("开始轨迹", COLOR_ACCENT, COLOR_BACKGROUND);
+        startButton = createActionButton("开始轨迹", COLOR_ACCENT, COLOR_TEXT);
         startButton.setOnClickListener(view -> {
             if (running) sendTrajectoryAction(LocationContract.ACTION_STOP);
             else startTrajectory();
@@ -291,10 +326,18 @@ public final class TrajectoryActivity extends Activity {
                 Gravity.BOTTOM, 12, 0, 12, 12);
         root.addView(panel, panelParams);
         root.setOnApplyWindowInsetsListener((view, insets) -> {
+            int topInset;
             int bottomInset = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
                     ? insets.getInsets(WindowInsets.Type.systemBars()).bottom
                     : insets.getSystemWindowInsetBottom();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                topInset = insets.getInsets(WindowInsets.Type.systemBars()).top;
+            } else {
+                topInset = insets.getSystemWindowInsetTop();
+            }
+            topBarParams.topMargin = topInset + dp(14);
             panelParams.bottomMargin = bottomInset + dp(12);
+            topBar.setLayoutParams(topBarParams);
             panel.setLayoutParams(panelParams);
             return insets;
         });
@@ -303,22 +346,41 @@ public final class TrajectoryActivity extends Activity {
 
     private void addSpeedButton(LinearLayout row, String name, float value) {
         Button button = compactButton(name, name + "速度");
+        button.setTag(value);
+        speedButtons.add(button);
         button.setOnClickListener(view -> {
             speedKmh = value;
             speedText.setText(String.format(Locale.US, "%.1f km/h", speedKmh));
+            selectSpeedButton(button);
         });
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(68), dp(40));
         params.leftMargin = dp(5);
         row.addView(button, params);
     }
 
+    private void selectSpeedButton(Button selected) {
+        for (Button button : speedButtons) {
+            boolean active = button == selected;
+            button.setTextColor(COLOR_TEXT);
+            button.setBackground(rounded(active ? COLOR_ACCENT : COLOR_MUTED, 12,
+                    COLOR_BORDER, 2));
+        }
+        if (customSpeedButton != null) {
+            boolean active = customSpeedButton == selected;
+            customSpeedButton.setTextColor(COLOR_TEXT);
+            customSpeedButton.setBackground(rounded(active ? COLOR_ACCENT : COLOR_MUTED, 12,
+                    COLOR_BORDER, 2));
+        }
+    }
+
     private void onMapTap(double latitude, double longitude) {
-        if (running || drawingMode) {
+        if (running || drawingMode || drawingPicking) {
             if (running) {
             Toast.makeText(this, "轨迹运行中，请先停止后再编辑", Toast.LENGTH_SHORT).show();
             }
             return;
         }
+        if (!drawnSegments.isEmpty()) drawnSegments.clear();
         AmapWebMapView.RoutePoint point = new AmapWebMapView.RoutePoint(latitude, longitude);
         if (selectionMode == 0) {
             if (routePoints.isEmpty()) routePoints.add(point);
@@ -332,6 +394,7 @@ public final class TrajectoryActivity extends Activity {
             routePoints.add(insertAt, point);
         }
         refreshRoute();
+        updatePlaybackButtons();
     }
 
     private void refreshRoute() {
@@ -345,6 +408,19 @@ public final class TrajectoryActivity extends Activity {
             if (routePoints.size() > 2) summary.append(" · 途经点 ").append(routePoints.size() - 2).append(" 个");
         } else summary.append("\n点击地图设置终点");
         routeSummary.setText(summary.toString());
+        if (routeHint != null) {
+            if (drawingPicking) {
+                routeHint.setText("拖动地图调整起点；黄色准星中心就是起点");
+            } else if (drawingMode) {
+                routeHint.setText(drawnSegments.isEmpty()
+                        ? "蓝色准星固定在中心；拖动地图绘制线路，松手完成一段"
+                        : "已完成 " + drawnSegments.size() + " 段；继续拖动地图绘制，点击“结束绘制”完成");
+            } else {
+                routeHint.setText(drawnSegments.isEmpty()
+                        ? "选择点位类型；自绘时蓝色准星就是实际落点"
+                        : "已绘制 " + drawnSegments.size() + " 段；点击“自绘”继续");
+            }
+        }
         setSelectionMode(selectionMode);
     }
 
@@ -353,40 +429,108 @@ public final class TrajectoryActivity extends Activity {
             Toast.makeText(this, "轨迹运行中，请先停止后再编辑", Toast.LENGTH_SHORT).show();
             return;
         }
-        drawingMode = !drawingMode;
-        mapView.setDrawingEnabled(drawingMode);
-        if (drawingMode) {
-            drawButton.setText("绘制中");
-            routeSummary.setText("按住地图拖动绘制线路\n松手后自动完成");
+        if (!drawingMode && !drawingPicking) {
+            drawingPicking = true;
+            mapView.setDrawingEnabled(false);
+            mapView.setDrawingPicking(true);
+            drawButton.setText("确认起点");
+            routeHint.setText("拖动地图调整起点；黄色准星中心就是起点");
             setSelectionMode(-1);
-            Toast.makeText(this, "按住地图拖动，松手完成自绘线路", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "先拖动地图，让黄色准星停在想要的起点", Toast.LENGTH_SHORT).show();
+        } else if (drawingPicking) {
+            drawingPicking = false;
+            drawingMode = true;
+            mapView.setDrawingPicking(false);
+            mapView.setDrawingEnabled(true);
+            drawButton.setText("绘制中");
+            routeHint.setText("蓝色准星固定在中心；拖动地图绘制线路，松手完成一段");
+            setSelectionMode(-1);
+            Toast.makeText(this, "起点已确认，拖动地图开始绘制", Toast.LENGTH_SHORT).show();
         } else {
+            drawingMode = false;
+            mapView.setDrawingEnabled(false);
             drawButton.setText("自绘");
             refreshRoute();
         }
+        updatePlaybackButtons();
     }
 
     private void disableDrawingMode() {
-        if (!drawingMode) return;
+        if (!drawingMode && !drawingPicking) return;
         drawingMode = false;
+        drawingPicking = false;
+        mapView.setDrawingPicking(false);
         mapView.setDrawingEnabled(false);
         if (drawButton != null) drawButton.setText("自绘");
+        if (routeHint != null) {
+            routeHint.setText(drawnSegments.isEmpty()
+                    ? "选择点位类型；自绘时蓝色准星就是实际落点"
+                    : "已绘制 " + drawnSegments.size() + " 段；点击“自绘”继续");
+        }
+        updatePlaybackButtons();
     }
 
     private void onDrawPath(List<AmapWebMapView.RoutePoint> points) {
         if (running) return;
-        disableDrawingMode();
         if (points == null || points.size() < 2) {
             Toast.makeText(this, "自绘线路至少需要两个点", Toast.LENGTH_SHORT).show();
             refreshRoute();
             return;
         }
-        routePoints.clear();
-        routePoints.addAll(simplifyDrawnPath(points, 180));
+        ArrayList<AmapWebMapView.RoutePoint> segment = simplifyDrawnPath(points, 180);
+        if (segment.size() < 2) {
+            Toast.makeText(this, "自绘线路至少需要两个有效点", Toast.LENGTH_SHORT).show();
+            refreshRoute();
+            return;
+        }
+        drawnSegments.add(segment);
+        rebuildDrawnRoute();
         selectionMode = 1;
         refreshRoute();
-        Toast.makeText(this, "已完成自绘线路，共 " + routePoints.size() + " 个点",
+        updatePlaybackButtons();
+        Toast.makeText(this, "已完成第 " + drawnSegments.size() + " 段，共 "
+                        + routePoints.size() + " 个点；继续拖动地图绘制，点击“结束绘制”完成",
                 Toast.LENGTH_SHORT).show();
+    }
+
+    private void rebuildDrawnRoute() {
+        routePoints.clear();
+        for (int segmentIndex = 0; segmentIndex < drawnSegments.size(); segmentIndex++) {
+            ArrayList<AmapWebMapView.RoutePoint> segment = drawnSegments.get(segmentIndex);
+            int startIndex = 0;
+            if (segmentIndex > 0 && !routePoints.isEmpty()
+                    && samePoint(routePoints.get(routePoints.size() - 1), segment.get(0))) {
+                startIndex = 1;
+            }
+            for (int pointIndex = startIndex; pointIndex < segment.size(); pointIndex++) {
+                routePoints.add(segment.get(pointIndex));
+            }
+        }
+        if (routePoints.isEmpty()) {
+            routePoints.add(new AmapWebMapView.RoutePoint(
+                    readDoublePreference(LocationContract.KEY_LATITUDE, LocationContract.DEFAULT_LATITUDE),
+                    readDoublePreference(LocationContract.KEY_LONGITUDE, LocationContract.DEFAULT_LONGITUDE)));
+        }
+    }
+
+    private boolean samePoint(AmapWebMapView.RoutePoint first,
+                              AmapWebMapView.RoutePoint second) {
+        return first != null && second != null
+                && Math.abs(first.latitude - second.latitude) < 1e-7d
+                && Math.abs(first.longitude - second.longitude) < 1e-7d;
+    }
+
+    private void undoLastSegment() {
+        if (running || drawingMode || drawingPicking) return;
+        if (drawnSegments.isEmpty()) {
+            Toast.makeText(this, "暂无线段可以撤销", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        drawnSegments.remove(drawnSegments.size() - 1);
+        rebuildDrawnRoute();
+        refreshRoute();
+        updatePlaybackButtons();
+        Toast.makeText(this, "已撤销上一段线路", Toast.LENGTH_SHORT).show();
     }
 
     private ArrayList<AmapWebMapView.RoutePoint> simplifyDrawnPath(
@@ -411,6 +555,7 @@ public final class TrajectoryActivity extends Activity {
             return;
         }
         disableDrawingMode();
+        drawnSegments.clear();
         routePoints.clear();
         routePoints.add(new AmapWebMapView.RoutePoint(
                 readDoublePreference(LocationContract.KEY_LATITUDE, LocationContract.DEFAULT_LATITUDE),
@@ -420,20 +565,21 @@ public final class TrajectoryActivity extends Activity {
 
     private void setSelectionMode(int mode) {
         selectionMode = mode;
-        startPointButton.setTextColor(mode == 0 ? COLOR_BACKGROUND : COLOR_TEXT);
-        endPointButton.setTextColor(mode == 1 ? COLOR_BACKGROUND : COLOR_TEXT);
-        viaPointButton.setTextColor(mode == 2 ? COLOR_BACKGROUND : COLOR_TEXT);
+        startPointButton.setTextColor(mode == 0 ? COLOR_TEXT : COLOR_TEXT);
+        endPointButton.setTextColor(mode == 1 ? COLOR_TEXT : COLOR_TEXT);
+        viaPointButton.setTextColor(mode == 2 ? COLOR_TEXT : COLOR_TEXT);
         startPointButton.setBackground(rounded(mode == 0 ? COLOR_ACCENT : COLOR_MUTED, 12,
-                mode == 0 ? COLOR_ACCENT : COLOR_BORDER, 1));
+                COLOR_BORDER, 2));
         endPointButton.setBackground(rounded(mode == 1 ? COLOR_ACCENT : COLOR_MUTED, 12,
-                mode == 1 ? COLOR_ACCENT : COLOR_BORDER, 1));
+                COLOR_BORDER, 2));
         viaPointButton.setBackground(rounded(mode == 2 ? COLOR_ACCENT : COLOR_MUTED, 12,
-                mode == 2 ? COLOR_ACCENT : COLOR_BORDER, 1));
+                COLOR_BORDER, 2));
         if (drawButton != null) {
-            drawButton.setText(drawingMode ? "绘制中" : "自绘");
-            drawButton.setTextColor(drawingMode ? COLOR_BACKGROUND : COLOR_TEXT);
-            drawButton.setBackground(rounded(drawingMode ? COLOR_ACCENT : COLOR_MUTED, 12,
-                    drawingMode ? COLOR_ACCENT : COLOR_BORDER, 1));
+            drawButton.setText(drawingPicking ? "确认起点"
+                    : (drawingMode ? (drawnSegments.isEmpty() ? "绘制中" : "结束绘制") : "自绘"));
+            drawButton.setTextColor(COLOR_TEXT);
+            drawButton.setBackground(rounded((drawingMode || drawingPicking) ? COLOR_ACCENT : COLOR_MUTED, 12,
+                    COLOR_BORDER, 2));
         }
     }
 
@@ -451,7 +597,7 @@ public final class TrajectoryActivity extends Activity {
         if (!rootOnly && !isSelectedMockLocationApp()) {
             new AlertDialog.Builder(this)
                     .setTitle("需要模拟位置授权")
-                    .setMessage("请在开发者选项中选择 Drift Location，或使用首页的 ADB 授权。")
+                    .setMessage("请在开发者选项中选择 Mock Location，或使用首页的 ADB 授权。")
                     .setNegativeButton("取消", null)
                     .setPositiveButton("打开设置", (dialog, which) -> openDeveloperSettings())
                     .show();
@@ -543,15 +689,24 @@ public final class TrajectoryActivity extends Activity {
     private void updatePlaybackButtons() {
         if (startButton == null) return;
         startButton.setText(running ? "停止轨迹" : "开始轨迹");
-        startButton.setTextColor(running ? Color.WHITE : COLOR_BACKGROUND);
+        startButton.setTextColor(running ? Color.WHITE : COLOR_TEXT);
         startButton.setBackground(rounded(running ? COLOR_DANGER : COLOR_ACCENT, 15,
-                Color.TRANSPARENT, 0));
+                COLOR_BORDER, 2));
         pauseButton.setEnabled(running);
         pauseButton.setText(paused ? "继续" : "暂停");
         pauseButton.setAlpha(running ? 1f : 0.55f);
         if (drawButton != null) {
             drawButton.setEnabled(!running);
             drawButton.setAlpha(running ? 0.55f : 1f);
+        }
+        if (fitRouteButton != null) {
+            fitRouteButton.setEnabled(!running && !drawingMode && !drawingPicking);
+            fitRouteButton.setAlpha(running || drawingMode || drawingPicking ? 0.55f : 1f);
+        }
+        if (undoSegmentButton != null) {
+            boolean canUndo = !running && !drawingMode && !drawingPicking && !drawnSegments.isEmpty();
+            undoSegmentButton.setEnabled(canUndo);
+            undoSegmentButton.setAlpha(canUndo ? 1f : 0.55f);
         }
     }
 
@@ -586,6 +741,7 @@ public final class TrajectoryActivity extends Activity {
                         if (value < 0.1f || value > 300f) throw new NumberFormatException();
                         speedKmh = value;
                         speedText.setText(String.format(Locale.US, "%.1f km/h", speedKmh));
+                        selectSpeedButton(customSpeedButton);
                     } catch (NumberFormatException exception) {
                         Toast.makeText(this, "速度范围为 0.1 - 300 km/h", Toast.LENGTH_SHORT).show();
                     }
@@ -665,7 +821,7 @@ public final class TrajectoryActivity extends Activity {
         Button button = createActionButton(text, COLOR_MUTED, COLOR_TEXT);
         button.setContentDescription(description);
         button.setTextSize(13);
-        button.setBackground(rounded(COLOR_MUTED, 12, COLOR_BORDER, 1));
+        button.setBackground(rounded(COLOR_MUTED, 12, COLOR_BORDER, 2));
         button.setPadding(dp(4), 0, dp(4), 0);
         return button;
     }
