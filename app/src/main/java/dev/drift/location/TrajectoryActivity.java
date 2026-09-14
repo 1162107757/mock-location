@@ -70,6 +70,20 @@ public final class TrajectoryActivity extends Activity {
     private Button drawButton;
     private Button fitRouteButton;
     private Button undoSegmentButton;
+    private Button editRouteButton;
+    private Button playbackSettingsButton;
+    private Button moreRouteButton;
+    private TextView playbackSummary;
+    private LinearLayout panel;
+    private LinearLayout editSection;
+    private LinearLayout advancedRouteRow;
+    private LinearLayout playbackSection;
+    private LinearLayout segmentTools;
+    private LinearLayout drawingFocusBar;
+    private TextView drawingFocusStatus;
+    private Button drawingFocusAction;
+    private Button drawingFocusExpandButton;
+    private Button drawingFocusCollapseButton;
     private final ArrayList<Button> speedButtons = new ArrayList<>();
     private Button customSpeedButton;
     private boolean running;
@@ -77,6 +91,10 @@ public final class TrajectoryActivity extends Activity {
     private boolean loop;
     private boolean drawingMode;
     private boolean drawingPicking;
+    private boolean editingExpanded;
+    private boolean playbackExpanded;
+    private boolean moreRouteExpanded;
+    private boolean drawingFocusExpanded;
     private int selectionMode = 1;
     private float speedKmh = 5f;
     private boolean receiverRegistered;
@@ -171,7 +189,7 @@ public final class TrajectoryActivity extends Activity {
                 Gravity.TOP, 14, 14, 14, 0);
         root.addView(topBar, topBarParams);
 
-        LinearLayout panel = new LinearLayout(this);
+        panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(dp(18), dp(9), dp(18), dp(14));
         panel.setBackground(rounded(COLOR_CARD, 22, COLOR_BORDER, 2));
@@ -194,12 +212,61 @@ public final class TrajectoryActivity extends Activity {
         routeHeader.addView(routeSummary, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         panel.addView(routeHeader);
 
-        routeHint = label("选择点位类型；自绘时蓝色准星就是实际落点", 11, COLOR_SUBTLE, Typeface.NORMAL);
-        routeHint.setPadding(dp(42), 0, 0, dp(7));
+        routeHint = label("路线从当前位置开始，点击编辑路线设置终点", 11, COLOR_SUBTLE, Typeface.NORMAL);
+        routeHint.setPadding(0, 0, 0, dp(8));
         panel.addView(routeHint);
 
-        LinearLayout modeRow = new LinearLayout(this);
-        modeRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout sectionToggleRow = new LinearLayout(this);
+        sectionToggleRow.setOrientation(LinearLayout.HORIZONTAL);
+        editRouteButton = compactButton("编辑路线", "展开路线编辑工具");
+        editRouteButton.setOnClickListener(view -> {
+            editingExpanded = !editingExpanded;
+            if (editingExpanded) playbackExpanded = false;
+            refreshRoute();
+            refreshPanelSections();
+        });
+        sectionToggleRow.addView(editRouteButton, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        playbackSettingsButton = compactButton("播放设置", "展开播放速度和循环设置");
+        playbackSettingsButton.setOnClickListener(view -> {
+            playbackExpanded = !playbackExpanded;
+            if (playbackExpanded) editingExpanded = false;
+            refreshRoute();
+            refreshPanelSections();
+        });
+        LinearLayout.LayoutParams playbackToggleParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
+        playbackToggleParams.leftMargin = dp(8);
+        sectionToggleRow.addView(playbackSettingsButton, playbackToggleParams);
+        panel.addView(sectionToggleRow);
+
+        playbackSummary = label("速度 5.0 km/h  ·  到达终点自动停止", 11, COLOR_SUBTLE, Typeface.NORMAL);
+        playbackSummary.setGravity(Gravity.CENTER_VERTICAL);
+        playbackSummary.setPadding(dp(2), 0, 0, 0);
+        LinearLayout.LayoutParams playbackSummaryParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(28));
+        panel.addView(playbackSummary, playbackSummaryParams);
+
+        editSection = new LinearLayout(this);
+        editSection.setOrientation(LinearLayout.VERTICAL);
+        editSection.setPadding(dp(10), dp(9), dp(10), dp(2));
+        editSection.setBackground(rounded(COLOR_MUTED, 16, Color.TRANSPARENT, 0));
+        LinearLayout editCaptionRow = new LinearLayout(this);
+        editCaptionRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView editCaption = label("路线编辑", 12, COLOR_SUBTLE, Typeface.BOLD);
+        editCaptionRow.addView(editCaption, new LinearLayout.LayoutParams(0, dp(24), 1f));
+        drawingFocusCollapseButton = compactButton("专注绘制", "收起面板进入专注绘制");
+        drawingFocusCollapseButton.setTextSize(11);
+        drawingFocusCollapseButton.setOnClickListener(view -> {
+            if (drawingMode || drawingPicking) {
+                drawingFocusExpanded = false;
+                refreshPanelSections();
+            }
+        });
+        editCaptionRow.addView(drawingFocusCollapseButton, new LinearLayout.LayoutParams(dp(86), dp(28)));
+        editSection.addView(editCaptionRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(28)));
+
+        LinearLayout primaryRouteRow = new LinearLayout(this);
+        primaryRouteRow.setOrientation(LinearLayout.HORIZONTAL);
         startPointButton = compactButton("起点", "设置起点");
         endPointButton = compactButton("终点", "设置终点");
         viaPointButton = compactButton("途经点", "增加途经点");
@@ -217,19 +284,36 @@ public final class TrajectoryActivity extends Activity {
             setSelectionMode(2);
         });
         drawButton.setOnClickListener(view -> toggleDrawingMode());
-        modeRow.addView(startPointButton, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        primaryRouteRow.addView(startPointButton, new LinearLayout.LayoutParams(0, dp(42), 1f));
         LinearLayout.LayoutParams endParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
-        endParams.leftMargin = dp(7);
-        modeRow.addView(endPointButton, endParams);
-        LinearLayout.LayoutParams viaParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
-        viaParams.leftMargin = dp(7);
-        modeRow.addView(viaPointButton, viaParams);
-        LinearLayout.LayoutParams drawParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
-        drawParams.leftMargin = dp(7);
-        modeRow.addView(drawButton, drawParams);
-        panel.addView(modeRow);
+        endParams.leftMargin = dp(8);
+        primaryRouteRow.addView(endPointButton, endParams);
+        editSection.addView(primaryRouteRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(42)));
 
-        LinearLayout segmentTools = new LinearLayout(this);
+        moreRouteButton = compactButton("更多路线工具", "显示途经点、自绘和线路操作");
+        moreRouteButton.setOnClickListener(view -> {
+            moreRouteExpanded = !moreRouteExpanded;
+            refreshPanelSections();
+        });
+        LinearLayout.LayoutParams moreParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(36));
+        moreParams.topMargin = dp(7);
+        editSection.addView(moreRouteButton, moreParams);
+
+        advancedRouteRow = new LinearLayout(this);
+        advancedRouteRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams viaParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
+        advancedRouteRow.addView(viaPointButton, viaParams);
+        LinearLayout.LayoutParams drawParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
+        drawParams.leftMargin = dp(8);
+        advancedRouteRow.addView(drawButton, drawParams);
+        LinearLayout.LayoutParams advancedParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
+        advancedParams.topMargin = dp(7);
+        editSection.addView(advancedRouteRow, advancedParams);
+
+        segmentTools = new LinearLayout(this);
         segmentTools.setOrientation(LinearLayout.HORIZONTAL);
         fitRouteButton = compactButton("查看全线", "将地图缩放到完整线路");
         fitRouteButton.setOnClickListener(view -> mapView.fitRoute());
@@ -242,8 +326,14 @@ public final class TrajectoryActivity extends Activity {
         LinearLayout.LayoutParams toolsParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(38));
         toolsParams.topMargin = dp(7);
-        panel.addView(segmentTools, toolsParams);
+        editSection.addView(segmentTools, toolsParams);
+        panel.addView(editSection, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        playbackSection = new LinearLayout(this);
+        playbackSection.setOrientation(LinearLayout.VERTICAL);
+        playbackSection.setPadding(dp(10), dp(9), dp(10), dp(2));
+        playbackSection.setBackground(rounded(COLOR_MUTED, 16, Color.TRANSPARENT, 0));
         LinearLayout speedHeader = new LinearLayout(this);
         speedHeader.setGravity(Gravity.CENTER_VERTICAL);
         TextView speedCaption = label("播放速度", 12, COLOR_SUBTLE, Typeface.BOLD);
@@ -253,8 +343,7 @@ public final class TrajectoryActivity extends Activity {
         speedHeader.addView(speedText, new LinearLayout.LayoutParams(dp(100), dp(25)));
         LinearLayout.LayoutParams speedHeaderParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(25));
-        speedHeaderParams.topMargin = dp(9);
-        panel.addView(speedHeader, speedHeaderParams);
+        playbackSection.addView(speedHeader, speedHeaderParams);
 
         HorizontalScrollView speedScroll = new HorizontalScrollView(this);
         speedScroll.setHorizontalScrollBarEnabled(false);
@@ -276,7 +365,7 @@ public final class TrajectoryActivity extends Activity {
         LinearLayout.LayoutParams speedScrollParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(40));
         speedScrollParams.topMargin = dp(2);
-        panel.addView(speedScroll, speedScrollParams);
+        playbackSection.addView(speedScroll, speedScrollParams);
         selectSpeedButton(speedKmh == 5f ? speedButtons.get(0) : customSpeedButton);
 
         LinearLayout optionRow = new LinearLayout(this);
@@ -287,12 +376,15 @@ public final class TrajectoryActivity extends Activity {
         loopButton.setOnClickListener(view -> {
             loop = !loop;
             loopButton.setText(loop ? "循环：开" : "循环：关");
+            refreshPanelSections();
         });
         optionRow.addView(loopButton, new LinearLayout.LayoutParams(dp(94), dp(38)));
         LinearLayout.LayoutParams optionParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(38));
         optionParams.topMargin = dp(5);
-        panel.addView(optionRow, optionParams);
+        playbackSection.addView(optionRow, optionParams);
+        panel.addView(playbackSection, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         playbackStatus = label("未运行", 12, COLOR_SUBTLE, Typeface.NORMAL);
         playbackStatus.setGravity(Gravity.CENTER_VERTICAL);
@@ -325,6 +417,33 @@ public final class TrajectoryActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM, 12, 0, 12, 12);
         root.addView(panel, panelParams);
+
+        drawingFocusBar = new LinearLayout(this);
+        drawingFocusBar.setOrientation(LinearLayout.HORIZONTAL);
+        drawingFocusBar.setGravity(Gravity.CENTER_VERTICAL);
+        drawingFocusBar.setPadding(dp(14), dp(7), dp(10), dp(7));
+        drawingFocusBar.setBackground(rounded(COLOR_CARD, 18, COLOR_BORDER, 2));
+        drawingFocusBar.setElevation(dp(8));
+        drawingFocusStatus = label("自绘中", 12, COLOR_TEXT, Typeface.BOLD);
+        drawingFocusStatus.setGravity(Gravity.CENTER_VERTICAL);
+        drawingFocusBar.addView(drawingFocusStatus, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        drawingFocusAction = compactButton("结束绘制", "结束当前绘制状态");
+        drawingFocusAction.setTextSize(12);
+        drawingFocusAction.setOnClickListener(view -> toggleDrawingMode());
+        drawingFocusBar.addView(drawingFocusAction, new LinearLayout.LayoutParams(dp(100), dp(42)));
+        drawingFocusExpandButton = compactButton("展开", "展开完整路线面板");
+        drawingFocusExpandButton.setTextSize(12);
+        drawingFocusExpandButton.setOnClickListener(view -> {
+            drawingFocusExpanded = true;
+            refreshPanelSections();
+        });
+        LinearLayout.LayoutParams focusExpandParams = new LinearLayout.LayoutParams(dp(68), dp(42));
+        focusExpandParams.leftMargin = dp(7);
+        drawingFocusBar.addView(drawingFocusExpandButton, focusExpandParams);
+        FrameLayout.LayoutParams focusBarParams = frameParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM, 24, 0, 24, 12);
+        root.addView(drawingFocusBar, focusBarParams);
         root.setOnApplyWindowInsetsListener((view, insets) -> {
             int topInset;
             int bottomInset = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
@@ -337,11 +456,60 @@ public final class TrajectoryActivity extends Activity {
             }
             topBarParams.topMargin = topInset + dp(14);
             panelParams.bottomMargin = bottomInset + dp(12);
+            focusBarParams.bottomMargin = bottomInset + dp(12);
             topBar.setLayoutParams(topBarParams);
             panel.setLayoutParams(panelParams);
+            drawingFocusBar.setLayoutParams(focusBarParams);
             return insets;
         });
+        refreshPanelSections();
         return root;
+    }
+
+    private void refreshPanelSections() {
+        if (editRouteButton == null) return;
+        boolean editing = editingExpanded && !running;
+        boolean playback = playbackExpanded && !running && !drawingMode && !drawingPicking;
+        editSection.setVisibility(editing ? View.VISIBLE : View.GONE);
+        playbackSection.setVisibility(playback ? View.VISIBLE : View.GONE);
+        advancedRouteRow.setVisibility(editing && moreRouteExpanded ? View.VISIBLE : View.GONE);
+        if (segmentTools != null) {
+            boolean showSegmentTools = editing && (routePoints.size() > 1 || !drawnSegments.isEmpty());
+            segmentTools.setVisibility(showSegmentTools ? View.VISIBLE : View.GONE);
+        }
+        moreRouteButton.setText(moreRouteExpanded ? "收起更多工具" : "更多路线工具");
+        editRouteButton.setText(editing ? "收起编辑" : "编辑路线");
+        playbackSettingsButton.setText(playback ? "收起设置" : "播放设置");
+        if (playbackSummary != null) {
+            playbackSummary.setText(String.format(Locale.US, "速度 %.1f km/h  ·  到达终点%s",
+                    speedKmh, loop ? "循环播放" : "自动停止"));
+        }
+        refreshDrawingFocusMode();
+    }
+
+    private void refreshDrawingFocusMode() {
+        if (panel == null || drawingFocusBar == null) return;
+        boolean drawing = drawingMode || drawingPicking;
+        boolean focus = drawing && !drawingFocusExpanded;
+        if (mapView != null) {
+            mapView.setCenterCrosshairVisible(!drawing);
+            mapView.setRouteMarkersVisible(!drawing);
+        }
+        panel.setVisibility(focus ? View.GONE : View.VISIBLE);
+        drawingFocusBar.setVisibility(focus ? View.VISIBLE : View.GONE);
+        if (drawingFocusStatus != null) {
+            drawingFocusStatus.setText(drawingPicking
+                    ? "调整起点 · 拖动地图定位准星"
+                    : "自绘中 · 已完成 " + drawnSegments.size() + " 段");
+        }
+        if (drawingFocusAction != null) {
+            drawingFocusAction.setText(drawingPicking ? "确认起点" : "结束绘制");
+            drawingFocusAction.setContentDescription(drawingPicking ? "确认自绘起点" : "结束当前绘制");
+        }
+        if (drawingFocusCollapseButton != null) {
+            drawingFocusCollapseButton.setVisibility(drawing && drawingFocusExpanded
+                    ? View.VISIBLE : View.GONE);
+        }
     }
 
     private void addSpeedButton(LinearLayout row, String name, float value) {
@@ -352,6 +520,7 @@ public final class TrajectoryActivity extends Activity {
             speedKmh = value;
             speedText.setText(String.format(Locale.US, "%.1f km/h", speedKmh));
             selectSpeedButton(button);
+            refreshPanelSections();
         });
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(68), dp(40));
         params.leftMargin = dp(5);
@@ -417,8 +586,10 @@ public final class TrajectoryActivity extends Activity {
                         : "已完成 " + drawnSegments.size() + " 段；继续拖动地图绘制，点击“结束绘制”完成");
             } else {
                 routeHint.setText(drawnSegments.isEmpty()
-                        ? "选择点位类型；自绘时蓝色准星就是实际落点"
-                        : "已绘制 " + drawnSegments.size() + " 段；点击“自绘”继续");
+                        ? (editingExpanded ? "选择起点、终点或自绘；蓝色准星就是实际落点"
+                        : "点击编辑路线选择起点、终点或自绘")
+                        : (editingExpanded ? "已绘制 " + drawnSegments.size() + " 段；点击“自绘”继续"
+                        : "已绘制 " + drawnSegments.size() + " 段；点击编辑路线继续"));
             }
         }
         setSelectionMode(selectionMode);
@@ -430,6 +601,9 @@ public final class TrajectoryActivity extends Activity {
             return;
         }
         if (!drawingMode && !drawingPicking) {
+            editingExpanded = true;
+            playbackExpanded = false;
+            drawingFocusExpanded = false;
             drawingPicking = true;
             mapView.setDrawingEnabled(false);
             mapView.setDrawingPicking(true);
@@ -448,6 +622,7 @@ public final class TrajectoryActivity extends Activity {
             Toast.makeText(this, "起点已确认，拖动地图开始绘制", Toast.LENGTH_SHORT).show();
         } else {
             drawingMode = false;
+            drawingFocusExpanded = false;
             mapView.setDrawingEnabled(false);
             drawButton.setText("自绘");
             refreshRoute();
@@ -459,13 +634,16 @@ public final class TrajectoryActivity extends Activity {
         if (!drawingMode && !drawingPicking) return;
         drawingMode = false;
         drawingPicking = false;
+        drawingFocusExpanded = false;
         mapView.setDrawingPicking(false);
         mapView.setDrawingEnabled(false);
         if (drawButton != null) drawButton.setText("自绘");
         if (routeHint != null) {
             routeHint.setText(drawnSegments.isEmpty()
-                    ? "选择点位类型；自绘时蓝色准星就是实际落点"
-                    : "已绘制 " + drawnSegments.size() + " 段；点击“自绘”继续");
+                    ? (editingExpanded ? "选择起点、终点或自绘；蓝色准星就是实际落点"
+                    : "点击编辑路线选择起点、终点或自绘")
+                    : (editingExpanded ? "已绘制 " + drawnSegments.size() + " 段；点击“自绘”继续"
+                    : "已绘制 " + drawnSegments.size() + " 段；点击编辑路线继续"));
         }
         updatePlaybackButtons();
     }
@@ -708,6 +886,7 @@ public final class TrajectoryActivity extends Activity {
             undoSegmentButton.setEnabled(canUndo);
             undoSegmentButton.setAlpha(canUndo ? 1f : 0.55f);
         }
+        refreshPanelSections();
     }
 
     private String routeJson() {
@@ -742,6 +921,7 @@ public final class TrajectoryActivity extends Activity {
                         speedKmh = value;
                         speedText.setText(String.format(Locale.US, "%.1f km/h", speedKmh));
                         selectSpeedButton(customSpeedButton);
+                        refreshPanelSections();
                     } catch (NumberFormatException exception) {
                         Toast.makeText(this, "速度范围为 0.1 - 300 km/h", Toast.LENGTH_SHORT).show();
                     }

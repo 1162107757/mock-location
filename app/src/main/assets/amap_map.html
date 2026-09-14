@@ -123,6 +123,7 @@
         var placeSearch = null;
         var routePolyline = null;
         var routeMarkers = [];
+        var routeMarkersVisible = true;
         var drawingEnabled = false;
         var drawingPicking = false;
         var drawingActive = false;
@@ -345,6 +346,15 @@
             if (routeMarkers.length) {
                 map.remove(routeMarkers);
                 routeMarkers = [];
+            }
+        };
+
+        window.setRouteMarkersVisible = function (visible) {
+            routeMarkersVisible = !!visible;
+            for (var index = 0; index < routeMarkers.length; index++) {
+                if (routeMarkers[index] && typeof routeMarkers[index].setMap === 'function') {
+                    routeMarkers[index].setMap(routeMarkersVisible ? map : null);
+                }
             }
         };
 
@@ -659,6 +669,7 @@
                 routeMarkers.push(endMarker);
             }
             map.add(routeMarkers);
+            if (!routeMarkersVisible) window.setRouteMarkersVisible(false);
         };
 
         function markerContent(color) {

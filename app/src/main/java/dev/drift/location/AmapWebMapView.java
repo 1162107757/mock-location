@@ -74,6 +74,7 @@ final class AmapWebMapView extends FrameLayout {
     private String pendingRouteJson;
     private boolean pendingDrawingEnabled;
     private boolean pendingDrawingPicking;
+    private boolean pendingRouteMarkersVisible = true;
 
     @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
     AmapWebMapView(Context context, String apiKey, String securityCode) {
@@ -162,6 +163,15 @@ final class AmapWebMapView extends FrameLayout {
     void setDrawingPicking(boolean enabled) {
         pendingDrawingPicking = enabled;
         if (mapReady) evaluate("setDrawingPicking(" + (enabled ? "true" : "false") + ")");
+    }
+
+    void setCenterCrosshairVisible(boolean visible) {
+        crosshairView.setVisibility(visible ? VISIBLE : GONE);
+    }
+
+    void setRouteMarkersVisible(boolean visible) {
+        pendingRouteMarkersVisible = visible;
+        if (mapReady) evaluate("setRouteMarkersVisible(" + (visible ? "true" : "false") + ")");
     }
 
     void setCenter(double latitude, double longitude) {
@@ -336,6 +346,7 @@ final class AmapWebMapView extends FrameLayout {
                 }
                 evaluate("setDrawingEnabled(" + (pendingDrawingEnabled ? "true" : "false") + ")");
                 evaluate("setDrawingPicking(" + (pendingDrawingPicking ? "true" : "false") + ")");
+                evaluate("setRouteMarkersVisible(" + (pendingRouteMarkersVisible ? "true" : "false") + ")");
             });
         }
 
