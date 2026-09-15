@@ -105,13 +105,13 @@
         window.__DRIFT_LEGACY_AMAP__ = __AMAP_LEGACY__;
         if (window.__DRIFT_LEGACY_AMAP__) window.forbidenWebGL = true;
     </script>
-    <script src="https://webapi.amap.com/maps?v=__AMAP_VERSION__&key=__AMAP_KEY__&plugin=AMap.PlaceSearch"></script>
+    <script src="https://webapi.amap.com/maps?v=__AMAP_VERSION__&key=__AMAP_KEY__&plugin=AMap.PlaceSearch,AMap.Driving,AMap.Walking,AMap.Riding"></script>
 </head>
 <body>
 <div id="map"></div>
 <div id="map-status">
     <span id="map-status-text">地图加载中…</span>
-    <button id="map-retry" type="button" onclick="window.location.reload()">重新加载</button>
+    <button id="map-retry" type="button" onclick="DriftBridge.retryMap()">重新加载</button>
 </div>
 <div id="draw-tip" hidden></div>
 <div id="draw-cursor-stem" hidden></div>
@@ -331,6 +331,16 @@
                 var position = routeMarkers[0].getPosition();
                 if (position) map.setCenter(position, false, 260);
             }
+        };
+
+        // Navigation routes can contain a few malformed or distant geometry
+        // points returned by the service. For the immediate post-planning
+        // viewport, use the actual start/end markers so they fill the map
+        // instead of zooming out to an unrelated city or province.
+        window.fitRouteEndpoints = function () {
+            if (!map || routeMarkers.length < 2
+                    || typeof map.setFitView !== 'function') return;
+            map.setFitView(routeMarkers, false, [48, 48, 180, 48], 18);
         };
 
         window.resumeMap = function () {
@@ -704,6 +714,77 @@
                 }
                 callback = bridge('onSearchError');
                 if (callback) callback.onSearchError(status || '高德搜索失败');
+            });
+        };
+
+        window.planRoute = function (mode, startLatitude, startLongitude,
+                                      endLatitude, endLongitude) {
+            if (!map || !window.AMap) {
+                var unavailable = bridge('onRoutePlanError');
+                if (unavailable) unavailable.onRoutePlanError('地图尚未加载完成');
+                return;
+            }
+            var startLat = Number(startLatitude);
+            var startLng = Number(startLongitude);
+            var endLat = Number(endLatitude);
+            var endLng = Number(endLongitude);
+            if (!isFinite(startLat) || !isFinite(startLng)
+                    || !isFinite(endLat) || !isFinite(endLng)) {
+                var invalid = bridge('onRoutePlanError');
+                if (invalid) invalid.onRoutePlanError('起点或终点坐标无效');
+                return;
+            }
+            var planner;
+            var selectedMode = mode === 'walking' || mode === 'riding' ? mode : 'driving';
+            try {
+                if (selectedMode === 'walking') {
+                    planner = new AMap.Walking({ isOutline: false, hideMarkers: true });
+                } else if (selectedMode === 'riding') {
+                    planner = new AMap.Riding({ isOutline: false, hideMarkers: true });
+                } else {
+                    planner = new AMap.Driving({ isOutline: false, hideMarkers: true });
+                }
+            } catch (exception) {
+                var createError = bridge('onRoutePlanError');
+                if (createError) createError.onRoutePlanError('导航服务初始化失败，请检查网络');
+                return;
+            }
+            var origin = new AMap.LngLat(startLng, startLat);
+            var destination = new AMap.LngLat(endLng, endLat);
+            planner.search(origin, destination, function (status, result) {
+                if (status !== 'complete' || !result || !result.routes || !result.routes.length) {
+                    var failed = bridge('onRoutePlanError');
+                    if (failed) failed.onRoutePlanError(status || '高德没有返回路线');
+                    return;
+                }
+                var route = result.routes[0];
+                // 驾车/步行返回 steps，骑行返回 rides；两者都包含可用于模拟的道路点。
+                var steps = route.steps || (route.paths && route.paths[0] && route.paths[0].steps)
+                    || route.rides || [];
+                var path = [];
+                for (var stepIndex = 0; stepIndex < steps.length; stepIndex++) {
+                    var stepPath = steps[stepIndex] && steps[stepIndex].path;
+                    if (!stepPath || !stepPath.length) continue;
+                    for (var pointIndex = 0; pointIndex < stepPath.length; pointIndex++) {
+                        var point = stepPath[pointIndex];
+                        var latitude = point && typeof point.getLat === 'function'
+                            ? Number(point.getLat()) : Number(point && point.lat);
+                        var longitude = point && typeof point.getLng === 'function'
+                            ? Number(point.getLng()) : Number(point && point.lng);
+                        if (!isFinite(latitude) || !isFinite(longitude)) continue;
+                        var previous = path.length ? path[path.length - 1] : null;
+                        if (previous && Math.abs(previous.latitude - latitude) < 1e-7
+                                && Math.abs(previous.longitude - longitude) < 1e-7) continue;
+                        path.push({ latitude: latitude, longitude: longitude });
+                    }
+                }
+                if (path.length < 2) {
+                    var empty = bridge('onRoutePlanError');
+                    if (empty) empty.onRoutePlanError('高德没有返回可用的导航线路');
+                    return;
+                }
+                var callback = bridge('onRoutePlanned');
+                if (callback) callback.onRoutePlanned(selectedMode, JSON.stringify(path));
             });
         };
 

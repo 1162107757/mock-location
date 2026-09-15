@@ -90,9 +90,9 @@ public final class MainActivity extends Activity {
             "https://raw.githubusercontent.com/1162107757/mock-location/main/update.json",
             "https://raw.githubusercontent.com/1162107757/mock-location/master/update.json"
     };
-    private static final String UPDATE_CHECK_SCHEMA = "2";
     private static final int UPDATE_TIMEOUT_MS = 8_000;
     private static final int UPDATE_MAX_BYTES = 256 * 1024;
+    private static boolean updateGateCheckedThisProcess;
 
     static final String DISCLAIMER_TEXT =
             "请在使用本软件前仔细阅读本说明。点击“同意并继续”，表示你已经阅读、理解并同意以下内容。\n\n"
@@ -137,6 +137,8 @@ public final class MainActivity extends Activity {
     private boolean rootCheckInFlight;
     private boolean rootProviderSetupInFlight;
     private boolean rootProviderAccessReady;
+    private boolean versionGateChecked;
+    private boolean versionGateInFlight;
     private String selectedPlaceName = "";
     private double selectedPlaceLatitude = Double.NaN;
     private double selectedPlaceLongitude = Double.NaN;
@@ -307,6 +309,28 @@ public final class MainActivity extends Activity {
         disclaimerDialog.show();
     }
 
+    private void checkMinimumVersion() {
+        if (versionGateInFlight || isFinishing()) return;
+        versionGateInFlight = true;
+        networkExecutor.execute(() -> {
+            UpdateInfo update = fetchUpdateInfo();
+            runOnUiThread(() -> {
+                versionGateInFlight = false;
+                if (update != null && update.minimumVersionCode > BuildConfig.VERSION_CODE) {
+                    showMandatoryUpdateDialog(update);
+                    return;
+                }
+                updateGateCheckedThisProcess = true;
+            });
+        });
+    }
+
+    private void startSilentVersionCheck() {
+        if (versionGateChecked || updateGateCheckedThisProcess) return;
+        versionGateChecked = true;
+        checkMinimumVersion();
+    }
+
     private boolean checkedBoxAtEnd(ScrollView scrollView) {
         if (scrollView == null || scrollView.getChildCount() == 0) return false;
         View child = scrollView.getChildAt(0);
@@ -314,6 +338,7 @@ public final class MainActivity extends Activity {
     }
 
     private void continueAmapSetup(Bundle savedInstanceState) {
+        startSilentVersionCheck();
         amapJsApiKey = AmapKeyStore.getJsApiKey(this);
         amapJsSecurityCode = AmapKeyStore.getJsSecurityCode(this);
         if (amapJsApiKey.isEmpty() || amapJsSecurityCode.isEmpty()) {
@@ -345,7 +370,6 @@ public final class MainActivity extends Activity {
         mapView.setCenter(latitude, longitude);
         renderState(running ? "正在模拟位置" : "准备就绪");
         checkRootAccess(false);
-        scheduleAutomaticUpdateCheck();
     }
 
     private void showAmapKeyDialog(boolean required, Bundle savedInstanceState) {
@@ -584,38 +608,32 @@ public final class MainActivity extends Activity {
         dialog.show();
     }
 
-    private void scheduleAutomaticUpdateCheck() {
-        String checkSchema = mapPreferences.getString("update_check_schema", "");
-        long lastCheck = UPDATE_CHECK_SCHEMA.equals(checkSchema)
-                ? mapPreferences.getLong("last_update_check_at", 0L) : 0L;
-        long now = System.currentTimeMillis();
-        if (now - lastCheck < 24L * 60L * 60L * 1_000L) return;
-        mapPreferences.edit()
-                .putString("update_check_schema", UPDATE_CHECK_SCHEMA)
-                .putLong("last_update_check_at", now)
-                .apply();
-        mainHandler.postDelayed(() -> performUpdateCheck(null, null, true), 1_500L);
-    }
-
     private void checkForUpdates(AlertDialog dialog, TextView statusView) {
         if (statusView != null) statusView.setText("正在检查更新…");
         if (dialog != null) dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
-        performUpdateCheck(dialog, statusView, false);
+        performUpdateCheck(dialog, statusView);
     }
 
-    private void performUpdateCheck(AlertDialog dialog, TextView statusView, boolean automatic) {
+    private void performUpdateCheck(AlertDialog dialog, TextView statusView) {
         networkExecutor.execute(() -> {
             UpdateInfo update = fetchUpdateInfo();
             mainHandler.post(() -> {
                 if (dialog != null) dialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
                 if (update == null) {
-                    if (!automatic && statusView != null) {
+                    if (statusView != null) {
                         statusView.setText("暂未获取到更新，请检查网络或更新清单地址");
                     }
                     return;
                 }
+                if (update.minimumVersionCode > BuildConfig.VERSION_CODE) {
+                    if (statusView != null) {
+                        statusView.setText("当前版本已停止支持，必须更新后才能继续使用");
+                    }
+                    if (!isFinishing()) showMandatoryUpdateDialog(update);
+                    return;
+                }
                 if (update.versionCode <= BuildConfig.VERSION_CODE) {
-                    if (!automatic && statusView != null) {
+                    if (statusView != null) {
                         statusView.setText("当前已是最新版本（" + BuildConfig.VERSION_NAME + "）");
                     }
                     return;
@@ -626,6 +644,33 @@ public final class MainActivity extends Activity {
                 if (!isFinishing()) showUpdateDialog(update);
             });
         });
+    }
+
+    private void showMandatoryUpdateDialog(UpdateInfo update) {
+        StringBuilder message = new StringBuilder()
+                .append("当前版本（versionCode ").append(BuildConfig.VERSION_CODE)
+                .append("）已停止支持。请更新到 ").append(update.versionName)
+                .append("（versionCode ").append(update.versionCode).append("）后继续使用。");
+        if (!update.releaseNotes.isEmpty()) {
+            message.append("\n\n更新内容：\n").append(update.releaseNotes);
+        }
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("必须更新")
+                .setMessage(message.toString())
+                .setPositiveButton(update.downloadUrl.isEmpty() ? "重试" : "打开下载页", null)
+                .setCancelable(false)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(view -> {
+                    if (update.downloadUrl.isEmpty()) {
+                        versionGateChecked = false;
+                        checkMinimumVersion();
+                        dialog.dismiss();
+                        return;
+                    }
+                    openWebPage(update.downloadUrl);
+                }));
+        dialog.show();
     }
 
     private UpdateInfo fetchUpdateInfo() {
@@ -661,12 +706,14 @@ public final class MainActivity extends Activity {
                 }
                 JSONObject json = new JSONObject(body.toString());
                 int versionCode = json.optInt("versionCode", -1);
+                int minimumVersionCode = json.optInt("minimumVersionCode",
+                        json.optInt("minVersionCode", 0));
                 String versionName = json.optString("versionName", "").trim();
                 String downloadUrl = json.optString("downloadUrl", "").trim();
                 String notes = json.optString("releaseNotes",
                         json.optString("content", "")).trim();
                 if (versionCode < 0 || versionName.isEmpty()) return null;
-                return new UpdateInfo(versionCode, versionName, downloadUrl, notes);
+                return new UpdateInfo(versionCode, minimumVersionCode, versionName, downloadUrl, notes);
             }
         } catch (Exception exception) {
             Log.w(LOG_TAG, "检查更新失败", exception);
@@ -1939,12 +1986,15 @@ public final class MainActivity extends Activity {
 
     private static final class UpdateInfo {
         final int versionCode;
+        final int minimumVersionCode;
         final String versionName;
         final String downloadUrl;
         final String releaseNotes;
 
-        UpdateInfo(int versionCode, String versionName, String downloadUrl, String releaseNotes) {
+        UpdateInfo(int versionCode, int minimumVersionCode, String versionName,
+                   String downloadUrl, String releaseNotes) {
             this.versionCode = versionCode;
+            this.minimumVersionCode = minimumVersionCode;
             this.versionName = versionName;
             this.downloadUrl = downloadUrl;
             this.releaseNotes = releaseNotes;

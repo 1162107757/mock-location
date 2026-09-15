@@ -15,6 +15,8 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.Settings;
 import android.text.InputType;
 import android.view.Gravity;
@@ -26,7 +28,11 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
+import android.widget.ProgressBar;
+import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -36,6 +42,7 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Date;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -52,13 +59,26 @@ public final class TrajectoryActivity extends Activity {
     private static final int COLOR_BLUE = Color.rgb(47, 152, 232);
     private static final int COLOR_TEAL = Color.rgb(65, 121, 140);
     private static final int COLOR_DANGER = Color.rgb(232, 74, 38);
+    private static final String FAVORITE_ROUTES_PREFS = "trajectory_favorites";
+    private static final String KEY_FAVORITE_ROUTES = "routes_json";
+    private static final int MAX_FAVORITE_ROUTES = 30;
+    private static final int MAX_FAVORITE_POINTS = 2_000;
+    private static final int PAGE_HOME = 0;
+    private static final int PAGE_EDITOR = 1;
+    private static final int PAGE_DRAW = 2;
+    private static final int PAGE_SETTINGS = 3;
+    private static final int PAGE_RUNNING = 4;
+    private static final int PAGE_FAVORITES = 5;
 
     private final ArrayList<AmapWebMapView.RoutePoint> routePoints = new ArrayList<>();
     private final ArrayList<ArrayList<AmapWebMapView.RoutePoint>> drawnSegments = new ArrayList<>();
+    private final ArrayList<FavoriteRoute> favoriteRoutes = new ArrayList<>();
     private SharedPreferences preferences;
+    private SharedPreferences favoritePreferences;
     private AmapWebMapView mapView;
     private TextView routeSummary;
     private TextView routeHint;
+    private Button favoriteListButton;
     private TextView playbackStatus;
     private TextView speedText;
     private Button startButton;
@@ -79,6 +99,11 @@ public final class TrajectoryActivity extends Activity {
     private LinearLayout advancedRouteRow;
     private LinearLayout playbackSection;
     private LinearLayout segmentTools;
+    private LinearLayout favoriteTools;
+    private Button saveFavoriteButton;
+    private Button openFavoritesButton;
+    private LinearLayout navigationTools;
+    private Button planRouteButton;
     private LinearLayout drawingFocusBar;
     private TextView drawingFocusStatus;
     private Button drawingFocusAction;
@@ -95,10 +120,51 @@ public final class TrajectoryActivity extends Activity {
     private boolean playbackExpanded;
     private boolean moreRouteExpanded;
     private boolean drawingFocusExpanded;
+    private boolean planningRoute;
+    private String routePlanMode = "";
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private Runnable routePlanTimeout;
+    private FrameLayout redesignedPages;
+    private FrameLayout redesignedHomePage;
+    private FrameLayout redesignedEditorPage;
+    private FrameLayout redesignedDrawPage;
+    private FrameLayout redesignedSettingsPage;
+    private FrameLayout redesignedRunningPage;
+    private FrameLayout redesignedFavoritesPage;
+    private TextView redesignedRouteSummary;
+    private TextView redesignedRouteMeta;
+    private TextView redesignedHomeSummary;
+    private TextView redesignedHomeMeta;
+    private TextView redesignedHomeRecent;
+    private TextView redesignedDrawStatus;
+    private TextView redesignedRunningStatus;
+    private TextView redesignedRunningMetrics;
+    private TextView redesignedRunningProgress;
+    private ProgressBar redesignedProgressBar;
+    private TextView redesignedSettingsSpeed;
+    private TextView redesignedSettingsSummary;
+    private TextView redesignedSettingsDetail;
+    private LinearLayout redesignedFavoriteList;
+    private final ArrayList<Button> redesignedSpeedButtons = new ArrayList<>();
+    private Button redesignedPlanButton;
+    private Button redesignedDrawButton;
+    private Button redesignedNextButton;
+    private Button redesignedMoreButton;
+    private Button redesignedSettingsStartButton;
+    private Button redesignedPauseButton;
+    private Button redesignedStopButton;
+    private Button redesignedDrawUndoButton;
+    private Button redesignedDrawConfirmButton;
+    private Button redesignedDrawFinishButton;
+    private Button redesignedLoopButton;
+    private int redesignedPage = PAGE_EDITOR;
     private int selectionMode = 1;
     private float speedKmh = 5f;
     private boolean receiverRegistered;
     private boolean rootSetupInFlight;
+    private double playbackProgress;
+    private double playbackLatitude = Double.NaN;
+    private double playbackLongitude = Double.NaN;
     private final ExecutorService rootExecutor = Executors.newSingleThreadExecutor();
 
     private final BroadcastReceiver trajectoryReceiver = new BroadcastReceiver() {
@@ -112,6 +178,9 @@ public final class TrajectoryActivity extends Activity {
                 double progress = intent.getDoubleExtra(LocationContract.EXTRA_PROGRESS, 0d);
                 double latitude = intent.getDoubleExtra(LocationContract.EXTRA_LATITUDE, Double.NaN);
                 double longitude = intent.getDoubleExtra(LocationContract.EXTRA_LONGITUDE, Double.NaN);
+                playbackProgress = progress;
+                playbackLatitude = latitude;
+                playbackLongitude = longitude;
                 String message = intent.getStringExtra(LocationContract.EXTRA_MESSAGE);
                 if (running && Double.isFinite(latitude) && Double.isFinite(longitude)) {
                     playbackStatus.setText(String.format(Locale.US, "%s · %.0f%%\n%.6f, %.6f",
@@ -146,6 +215,8 @@ public final class TrajectoryActivity extends Activity {
         }
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         preferences = LocationContract.openPreferences(this);
+        favoritePreferences = getSharedPreferences(FAVORITE_ROUTES_PREFS, MODE_PRIVATE);
+        loadFavoriteRoutes();
         setContentView(buildInterface());
         registerTrajectoryReceiver();
 
@@ -154,6 +225,23 @@ public final class TrajectoryActivity extends Activity {
         routePoints.add(new AmapWebMapView.RoutePoint(latitude, longitude));
         mapView.setOnMapTapListener(this::onMapTap);
         mapView.setOnDrawPathListener(this::onDrawPath);
+        mapView.setOnRoutePlanListener(new AmapWebMapView.OnRoutePlanListener() {
+            @Override
+            public void onRoutePlanned(String mode, List<AmapWebMapView.RoutePoint> points) {
+                clearRoutePlanTimeout();
+                handleRoutePlanned(mode, points);
+            }
+
+            @Override
+            public void onRoutePlanFailed(String message) {
+                clearRoutePlanTimeout();
+                planningRoute = false;
+                if (planRouteButton != null) planRouteButton.setText("生成导航线路");
+                refreshPanelSections();
+                Toast.makeText(TrajectoryActivity.this,
+                        message == null ? "导航线路生成失败" : message, Toast.LENGTH_LONG).show();
+            }
+        });
         mapView.onCreate(savedInstanceState);
         mapView.setCenter(latitude, longitude);
         refreshRoute();
@@ -174,8 +262,7 @@ public final class TrajectoryActivity extends Activity {
         topBar.setGravity(Gravity.CENTER_VERTICAL);
         topBar.setPadding(dp(6), dp(4), dp(6), dp(4));
         topBar.setBackground(rounded(COLOR_CARD, 18, COLOR_BORDER, 2));
-        Button backButton = compactButton("‹", "返回首页");
-        backButton.setTextSize(28);
+        ImageButton backButton = centeredBackButton("返回首页");
         backButton.setOnClickListener(view -> finish());
         topBar.addView(backButton, new LinearLayout.LayoutParams(dp(44), dp(42)));
         TextView title = label("轨迹模拟", 18, COLOR_TEXT, Typeface.BOLD);
@@ -210,6 +297,9 @@ public final class TrajectoryActivity extends Activity {
         routeSummary.setLineSpacing(dp(2), 1f);
         routeSummary.setPadding(0, 0, 0, dp(2));
         routeHeader.addView(routeSummary, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        favoriteListButton = compactButton(favoriteButtonText(), "打开收藏线路");
+        favoriteListButton.setOnClickListener(view -> showFavoriteRoutesDialog());
+        routeHeader.addView(favoriteListButton, new LinearLayout.LayoutParams(dp(76), dp(38)));
         panel.addView(routeHeader);
 
         routeHint = label("路线从当前位置开始，点击编辑路线设置终点", 11, COLOR_SUBTLE, Typeface.NORMAL);
@@ -327,6 +417,32 @@ public final class TrajectoryActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(38));
         toolsParams.topMargin = dp(7);
         editSection.addView(segmentTools, toolsParams);
+
+        favoriteTools = new LinearLayout(this);
+        favoriteTools.setOrientation(LinearLayout.HORIZONTAL);
+        saveFavoriteButton = compactButton("收藏线路", "收藏当前自绘线路");
+        saveFavoriteButton.setOnClickListener(view -> saveCurrentRouteAsFavorite());
+        favoriteTools.addView(saveFavoriteButton, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        openFavoritesButton = compactButton("我的收藏", "打开已收藏线路");
+        openFavoritesButton.setOnClickListener(view -> showFavoriteRoutesDialog());
+        LinearLayout.LayoutParams openFavoritesParams = new LinearLayout.LayoutParams(0, dp(38), 1f);
+        openFavoritesParams.leftMargin = dp(7);
+        favoriteTools.addView(openFavoritesButton, openFavoritesParams);
+        LinearLayout.LayoutParams favoriteToolsParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(38));
+        favoriteToolsParams.topMargin = dp(7);
+        editSection.addView(favoriteTools, favoriteToolsParams);
+
+        navigationTools = new LinearLayout(this);
+        navigationTools.setOrientation(LinearLayout.HORIZONTAL);
+        planRouteButton = compactButton("生成导航线路", "使用起点和终点生成导航线路");
+        planRouteButton.setOnClickListener(view -> showRoutePlannerDialog());
+        navigationTools.addView(planRouteButton, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(38)));
+        LinearLayout.LayoutParams navigationToolsParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(38));
+        navigationToolsParams.topMargin = dp(7);
+        editSection.addView(navigationTools, navigationToolsParams);
         panel.addView(editSection, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -444,6 +560,10 @@ public final class TrajectoryActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM, 24, 0, 24, 12);
         root.addView(drawingFocusBar, focusBarParams);
+        topBar.setVisibility(View.GONE);
+        panel.setVisibility(View.GONE);
+        drawingFocusBar.setVisibility(View.GONE);
+        buildRedesignedPages(root);
         root.setOnApplyWindowInsetsListener((view, insets) -> {
             int topInset;
             int bottomInset = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
@@ -457,6 +577,9 @@ public final class TrajectoryActivity extends Activity {
             topBarParams.topMargin = topInset + dp(14);
             panelParams.bottomMargin = bottomInset + dp(12);
             focusBarParams.bottomMargin = bottomInset + dp(12);
+            if (redesignedPages != null) {
+                redesignedPages.setPadding(0, topInset, 0, bottomInset);
+            }
             topBar.setLayoutParams(topBarParams);
             panel.setLayoutParams(panelParams);
             drawingFocusBar.setLayoutParams(focusBarParams);
@@ -464,6 +587,689 @@ public final class TrajectoryActivity extends Activity {
         });
         refreshPanelSections();
         return root;
+    }
+
+    /** The route editor is split into focused pages so the map remains visible while editing. */
+    private void buildRedesignedPages(FrameLayout root) {
+        redesignedPages = new FrameLayout(this);
+        redesignedPages.setClickable(false);
+        root.addView(redesignedPages, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        redesignedHomePage = new FrameLayout(this);
+        redesignedEditorPage = new FrameLayout(this);
+        redesignedDrawPage = new FrameLayout(this);
+        redesignedSettingsPage = new FrameLayout(this);
+        redesignedRunningPage = new FrameLayout(this);
+        redesignedFavoritesPage = new FrameLayout(this);
+        redesignedPages.addView(redesignedHomePage, fullPageParams());
+        redesignedPages.addView(redesignedEditorPage, fullPageParams());
+        redesignedPages.addView(redesignedDrawPage, fullPageParams());
+        redesignedPages.addView(redesignedSettingsPage, fullPageParams());
+        redesignedPages.addView(redesignedRunningPage, fullPageParams());
+        redesignedPages.addView(redesignedFavoritesPage, fullPageParams());
+
+        buildRedesignedHomePage();
+        buildRedesignedEditorPage();
+        buildRedesignedDrawPage();
+        buildRedesignedSettingsPage();
+        buildRedesignedRunningPage();
+        buildRedesignedFavoritesPage();
+        goToRedesignedPage(PAGE_HOME);
+    }
+
+    private FrameLayout.LayoutParams fullPageParams() {
+        return new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+    }
+
+    private LinearLayout redesignedToolbar(String titleText, View.OnClickListener backListener) {
+        LinearLayout toolbar = new LinearLayout(this);
+        toolbar.setGravity(Gravity.CENTER_VERTICAL);
+        toolbar.setPadding(dp(8), dp(4), dp(8), dp(4));
+        toolbar.setBackground(rounded(COLOR_CARD, 18, COLOR_BORDER, 2));
+        ImageButton back = centeredBackButton("返回" + titleText);
+        back.setOnClickListener(backListener);
+        toolbar.addView(back, new LinearLayout.LayoutParams(dp(44), dp(42)));
+        TextView title = label(titleText, 18, COLOR_TEXT, Typeface.BOLD);
+        title.setGravity(Gravity.CENTER);
+        toolbar.addView(title, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        View spacer = new View(this);
+        toolbar.addView(spacer, new LinearLayout.LayoutParams(dp(44), dp(42)));
+        return toolbar;
+    }
+
+    private LinearLayout redesignedCard() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(18), dp(13), dp(18), dp(16));
+        card.setBackground(rounded(COLOR_CARD, 24, COLOR_BORDER, 2));
+        card.setElevation(dp(8));
+        return card;
+    }
+
+    private Button redesignedPrimaryButton(String text, String description) {
+        Button button = createActionButton(text, COLOR_ACCENT, COLOR_TEXT);
+        button.setContentDescription(description);
+        button.setMinHeight(dp(48));
+        return button;
+    }
+
+    private Button redesignedSecondaryButton(String text, String description) {
+        Button button = compactButton(text, description);
+        button.setMinHeight(dp(46));
+        return button;
+    }
+
+    private void buildRedesignedHomePage() {
+        redesignedHomePage.setBackgroundColor(COLOR_BACKGROUND);
+        redesignedHomePage.addView(redesignedToolbar("轨迹模拟", view -> finish()),
+                frameParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54), Gravity.TOP, 14, 14, 14, 0));
+        LinearLayout card = redesignedCard();
+        View handle = new View(this);
+        handle.setBackground(rounded(COLOR_BORDER, 2, Color.TRANSPARENT, 0));
+        LinearLayout.LayoutParams handleParams = new LinearLayout.LayoutParams(dp(42), dp(4));
+        handleParams.gravity = Gravity.CENTER_HORIZONTAL;
+        handleParams.bottomMargin = dp(10);
+        card.addView(handle, handleParams);
+        TextView section = label("当前线路", 12, COLOR_SUBTLE, Typeface.BOLD);
+        card.addView(section, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(24)));
+        redesignedHomeSummary = label("起点：当前位置\n终点：未设置", 18, COLOR_TEXT, Typeface.BOLD);
+        redesignedHomeSummary.setLineSpacing(dp(2), 1f);
+        card.addView(redesignedHomeSummary, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(68)));
+        redesignedHomeMeta = label("准备新建一条线路", 12, COLOR_SUBTLE, Typeface.NORMAL);
+        card.addView(redesignedHomeMeta, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(28)));
+        Button newRoute = redesignedPrimaryButton("新建线路", "新建线路");
+        newRoute.setOnClickListener(view -> {
+            clearRoute();
+            goToRedesignedPage(PAGE_EDITOR);
+        });
+        card.addView(newRoute, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
+        TextView recentLabel = label("最近线路", 12, COLOR_SUBTLE, Typeface.BOLD);
+        LinearLayout.LayoutParams recentLabelParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(24));
+        recentLabelParams.topMargin = dp(10);
+        card.addView(recentLabel, recentLabelParams);
+        redesignedHomeRecent = label("暂无最近线路\n完成路线后会显示在这里", 13, COLOR_SUBTLE, Typeface.NORMAL);
+        redesignedHomeRecent.setLineSpacing(dp(2), 1f);
+        card.addView(redesignedHomeRecent, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
+        LinearLayout quickRow = new LinearLayout(this);
+        quickRow.setOrientation(LinearLayout.HORIZONTAL);
+        Button continueEdit = redesignedSecondaryButton("继续编辑", "继续编辑当前线路");
+        continueEdit.setOnClickListener(view -> goToRedesignedPage(PAGE_EDITOR));
+        Button favorites = redesignedSecondaryButton("我的收藏", "打开收藏线路");
+        favorites.setOnClickListener(view -> goToRedesignedPage(PAGE_FAVORITES));
+        quickRow.addView(continueEdit, new LinearLayout.LayoutParams(0, dp(44), 1f));
+        LinearLayout.LayoutParams favoritesParams = new LinearLayout.LayoutParams(0, dp(44), 1f);
+        favoritesParams.leftMargin = dp(8);
+        quickRow.addView(favorites, favoritesParams);
+        LinearLayout.LayoutParams quickParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+        quickParams.topMargin = dp(9);
+        card.addView(quickRow, quickParams);
+        redesignedHomePage.addView(card, frameParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.TOP, 14, 82, 14, 14));
+    }
+
+    private void buildRedesignedEditorPage() {
+        redesignedEditorPage.addView(redesignedToolbar("路线编辑", view -> goToRedesignedPage(PAGE_HOME)),
+                frameParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54), Gravity.TOP, 14, 14, 14, 0));
+
+        LinearLayout card = redesignedCard();
+        card.setPadding(dp(16), dp(11), dp(16), dp(14));
+        View handle = new View(this);
+        handle.setBackground(rounded(COLOR_BORDER, 2, Color.TRANSPARENT, 0));
+        LinearLayout.LayoutParams handleParams = new LinearLayout.LayoutParams(dp(42), dp(4));
+        handleParams.gravity = Gravity.CENTER_HORIZONTAL;
+        handleParams.bottomMargin = dp(10);
+        card.addView(handle, handleParams);
+
+        redesignedRouteSummary = label("起点：当前位置\n终点：未设置", 15, COLOR_TEXT, Typeface.BOLD);
+        redesignedRouteSummary.setLineSpacing(dp(2), 1f);
+        card.addView(redesignedRouteSummary, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(54)));
+        redesignedRouteMeta = label("选择起点和终点，或进入自绘线路", 12, COLOR_SUBTLE, Typeface.NORMAL);
+        card.addView(redesignedRouteMeta, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(25)));
+
+        LinearLayout pointRow = new LinearLayout(this);
+        pointRow.setOrientation(LinearLayout.HORIZONTAL);
+        Button startPoint = redesignedSecondaryButton("设置起点", "设置线路起点");
+        startPoint.setOnClickListener(view -> {
+            disableDrawingMode();
+            setSelectionMode(0);
+            Toast.makeText(this, "拖动地图后点击地图设置起点", Toast.LENGTH_SHORT).show();
+        });
+        Button endPoint = redesignedSecondaryButton("设置终点", "设置线路终点");
+        endPoint.setOnClickListener(view -> {
+            disableDrawingMode();
+            setSelectionMode(1);
+            Toast.makeText(this, "拖动地图后点击地图设置终点", Toast.LENGTH_SHORT).show();
+        });
+        pointRow.addView(startPoint, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        LinearLayout.LayoutParams endPointParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
+        endPointParams.leftMargin = dp(8);
+        pointRow.addView(endPoint, endPointParams);
+        LinearLayout.LayoutParams pointRowParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
+        pointRowParams.topMargin = dp(4);
+        card.addView(pointRow, pointRowParams);
+
+        redesignedNextButton = redesignedPrimaryButton("下一步：播放设置", "路线准备完成，打开播放设置");
+        redesignedNextButton.setOnClickListener(view -> goToRedesignedPage(PAGE_SETTINGS));
+        LinearLayout.LayoutParams nextParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(50));
+        nextParams.topMargin = dp(9);
+        card.addView(redesignedNextButton, nextParams);
+
+        LinearLayout routeActions = new LinearLayout(this);
+        routeActions.setOrientation(LinearLayout.HORIZONTAL);
+        redesignedDrawButton = redesignedSecondaryButton("自绘线路", "进入全屏自绘线路");
+        redesignedDrawButton.setOnClickListener(view -> startRedesignedDrawing());
+        redesignedPlanButton = redesignedSecondaryButton("生成导航线路", "使用起点和终点生成导航线路");
+        redesignedPlanButton.setOnClickListener(view -> showRoutePlannerDialog());
+        routeActions.addView(redesignedDrawButton, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        LinearLayout.LayoutParams planParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
+        planParams.leftMargin = dp(8);
+        routeActions.addView(redesignedPlanButton, planParams);
+        LinearLayout.LayoutParams routeActionsParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
+        routeActionsParams.topMargin = dp(8);
+        card.addView(routeActions, routeActionsParams);
+
+        LinearLayout utilityRow = new LinearLayout(this);
+        utilityRow.setOrientation(LinearLayout.HORIZONTAL);
+        Button via = redesignedSecondaryButton("途经点", "增加途经点");
+        via.setOnClickListener(view -> {
+            disableDrawingMode();
+            setSelectionMode(2);
+            Toast.makeText(this, "点击地图添加途经点", Toast.LENGTH_SHORT).show();
+        });
+        Button undo = redesignedSecondaryButton("撤销上一段", "撤销最近绘制的线路段");
+        undo.setOnClickListener(view -> undoLastSegment());
+        utilityRow.addView(via, new LinearLayout.LayoutParams(0, dp(40), 1f));
+        LinearLayout.LayoutParams undoParams = new LinearLayout.LayoutParams(0, dp(40), 1f);
+        undoParams.leftMargin = dp(8);
+        utilityRow.addView(undo, undoParams);
+        LinearLayout.LayoutParams utilityParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40));
+        utilityParams.topMargin = dp(8);
+        card.addView(utilityRow, utilityParams);
+
+        LinearLayout footerRow = new LinearLayout(this);
+        footerRow.setOrientation(LinearLayout.HORIZONTAL);
+        Button save = redesignedSecondaryButton("收藏线路", "收藏当前线路");
+        save.setOnClickListener(view -> saveCurrentRouteAsFavorite());
+        Button more = redesignedSecondaryButton("更多", "打开更多路线工具");
+        redesignedMoreButton = more;
+        more.setOnClickListener(view -> showEditorMoreDialog());
+        footerRow.addView(save, new LinearLayout.LayoutParams(0, dp(40), 1f));
+        LinearLayout.LayoutParams moreParams = new LinearLayout.LayoutParams(0, dp(40), 1f);
+        moreParams.leftMargin = dp(8);
+        footerRow.addView(more, moreParams);
+        LinearLayout.LayoutParams footerParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(40));
+        footerParams.topMargin = dp(8);
+        card.addView(footerRow, footerParams);
+
+        redesignedEditorPage.addView(card, frameParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM, 14, 0, 14, 14));
+    }
+
+    private void buildRedesignedDrawPage() {
+        redesignedDrawPage.addView(redesignedToolbar("自绘线路", view -> finishRedesignedDrawing()),
+                frameParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54), Gravity.TOP, 14, 14, 14, 0));
+        LinearLayout status = new LinearLayout(this);
+        status.setGravity(Gravity.CENTER_VERTICAL);
+        status.setPadding(dp(16), 0, dp(16), 0);
+        status.setBackground(rounded(COLOR_CARD, 17, COLOR_BORDER, 2));
+        redesignedDrawStatus = label("拖动地图，准星位置就是线路点", 12, COLOR_TEXT, Typeface.BOLD);
+        redesignedDrawStatus.setGravity(Gravity.CENTER_VERTICAL);
+        status.addView(redesignedDrawStatus, new LinearLayout.LayoutParams(0, dp(42), 1f));
+        redesignedDrawPage.addView(status, frameParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48), Gravity.TOP | Gravity.CENTER_HORIZONTAL,
+                28, 82, 28, 0));
+
+        LinearLayout bottom = redesignedCard();
+        bottom.setPadding(dp(12), dp(9), dp(12), dp(12));
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        redesignedDrawUndoButton = redesignedSecondaryButton("撤销上一段", "撤销最近绘制的线路段");
+        redesignedDrawUndoButton.setOnClickListener(view -> undoLastSegment());
+        redesignedDrawConfirmButton = redesignedSecondaryButton("继续绘制", "继续自绘线路");
+        redesignedDrawConfirmButton.setOnClickListener(view -> {
+            if (drawingPicking) {
+                toggleDrawingMode();
+            } else if (!drawingMode) {
+                toggleDrawingMode();
+            } else {
+                Toast.makeText(this, "拖动地图继续绘制线路", Toast.LENGTH_SHORT).show();
+            }
+        });
+        redesignedDrawFinishButton = redesignedPrimaryButton("完成绘制", "完成自绘线路");
+        redesignedDrawFinishButton.setOnClickListener(view -> finishRedesignedDrawing());
+        actions.addView(redesignedDrawUndoButton, new LinearLayout.LayoutParams(0, dp(46), 1f));
+        LinearLayout.LayoutParams continueParams = new LinearLayout.LayoutParams(0, dp(46), 1f);
+        continueParams.leftMargin = dp(7);
+        actions.addView(redesignedDrawConfirmButton, continueParams);
+        LinearLayout.LayoutParams drawFinishParams = new LinearLayout.LayoutParams(0, dp(46), 1f);
+        drawFinishParams.leftMargin = dp(7);
+        actions.addView(redesignedDrawFinishButton, drawFinishParams);
+        bottom.addView(actions, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(46)));
+        redesignedDrawPage.addView(bottom, frameParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(82), Gravity.BOTTOM, 14, 0, 14, 14));
+    }
+
+    private void buildRedesignedSettingsPage() {
+        redesignedSettingsPage.addView(redesignedToolbar("播放设置", view -> goToRedesignedPage(PAGE_EDITOR)),
+                frameParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54), Gravity.TOP, 14, 14, 14, 0));
+        redesignedSettingsPage.setBackgroundColor(COLOR_BACKGROUND);
+        LinearLayout card = redesignedCard();
+        card.setPadding(dp(16), dp(14), dp(16), dp(16));
+        TextView previewLabel = label("路线预览", 12, COLOR_SUBTLE, Typeface.BOLD);
+        card.addView(previewLabel, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(24)));
+        LinearLayout preview = new LinearLayout(this);
+        preview.setOrientation(LinearLayout.VERTICAL);
+        preview.setPadding(dp(14), dp(9), dp(14), dp(9));
+        preview.setBackground(rounded(Color.rgb(234, 243, 255), 14, COLOR_BLUE, 1));
+        redesignedSettingsSummary = label("起点 → 终点", 16, COLOR_TEXT, Typeface.BOLD);
+        preview.addView(redesignedSettingsSummary, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(28)));
+        redesignedSettingsDetail = label("距离待计算 · 预计用时待计算", 12, COLOR_SUBTLE, Typeface.NORMAL);
+        preview.addView(redesignedSettingsDetail, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(24)));
+        LinearLayout.LayoutParams previewParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(64));
+        previewParams.topMargin = dp(3);
+        card.addView(preview, previewParams);
+        redesignedSettingsSpeed = label("5.0 km/h", 28, COLOR_TEXT, Typeface.BOLD);
+        redesignedSettingsSpeed.setGravity(Gravity.CENTER);
+        card.addView(redesignedSettingsSpeed, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(58)));
+        TextView speedLabel = label("模拟速度", 12, COLOR_SUBTLE, Typeface.BOLD);
+        card.addView(speedLabel, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(24)));
+        LinearLayout speedRow = new LinearLayout(this);
+        speedRow.setOrientation(LinearLayout.HORIZONTAL);
+        addRedesignedSpeedButton(speedRow, "5", 5f);
+        addRedesignedSpeedButton(speedRow, "10", 10f);
+        addRedesignedSpeedButton(speedRow, "20", 20f);
+        addRedesignedSpeedButton(speedRow, "自定义", -1f);
+        card.addView(speedRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+        redesignedLoopButton = redesignedSecondaryButton("循环播放：关", "切换循环播放");
+        redesignedLoopButton.setOnClickListener(view -> {
+            loop = !loop;
+            refreshRedesignedPages();
+        });
+        LinearLayout.LayoutParams loopParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+        loopParams.topMargin = dp(10);
+        card.addView(redesignedLoopButton, loopParams);
+        redesignedSettingsStartButton = redesignedPrimaryButton("开始模拟", "开始轨迹模拟");
+        redesignedSettingsStartButton.setOnClickListener(view -> startTrajectory());
+        LinearLayout.LayoutParams startParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52));
+        startParams.topMargin = dp(12);
+        card.addView(redesignedSettingsStartButton, startParams);
+        redesignedSettingsPage.addView(card, frameParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.TOP, 14, 82, 14, 14));
+    }
+
+    private void buildRedesignedRunningPage() {
+        redesignedRunningPage.addView(redesignedToolbar("正在模拟", view -> {
+            if (running) Toast.makeText(this, "请先停止轨迹", Toast.LENGTH_SHORT).show();
+            else goToRedesignedPage(PAGE_EDITOR);
+        }), frameParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54), Gravity.TOP, 14, 14, 14, 0));
+        // The running page is a map-first screen. Keep its root transparent so
+        // the WebView remains visible behind the status toolbar and bottom card.
+        LinearLayout card = redesignedCard();
+        card.setPadding(dp(16), dp(14), dp(16), dp(16));
+        LinearLayout stateRow = new LinearLayout(this);
+        stateRow.setGravity(Gravity.CENTER_VERTICAL);
+        View dot = new View(this);
+        dot.setBackground(rounded(Color.rgb(34, 181, 115), 20, Color.TRANSPARENT, 0));
+        stateRow.addView(dot, new LinearLayout.LayoutParams(dp(14), dp(14)));
+        redesignedRunningStatus = label("进行中", 21, Color.rgb(22, 150, 91), Typeface.BOLD);
+        redesignedRunningStatus.setPadding(dp(8), 0, 0, 0);
+        stateRow.addView(redesignedRunningStatus, new LinearLayout.LayoutParams(0, dp(32), 1f));
+        card.addView(stateRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(36)));
+        redesignedRunningMetrics = label("速度 --\n已用时间 -- · 剩余距离 --", 14, COLOR_TEXT, Typeface.BOLD);
+        redesignedRunningMetrics.setLineSpacing(dp(2), 1f);
+        card.addView(redesignedRunningMetrics, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(58)));
+        redesignedRunningProgress = label("0%", 12, COLOR_SUBTLE, Typeface.BOLD);
+        redesignedRunningProgress.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        redesignedProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        redesignedProgressBar.setMax(1000);
+        redesignedProgressBar.setProgress(0);
+        LinearLayout progressRow = new LinearLayout(this);
+        progressRow.setGravity(Gravity.CENTER_VERTICAL);
+        progressRow.addView(redesignedProgressBar, new LinearLayout.LayoutParams(0, dp(10), 1f));
+        progressRow.addView(redesignedRunningProgress, new LinearLayout.LayoutParams(dp(44), dp(28)));
+        LinearLayout.LayoutParams progressRowParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(30));
+        progressRowParams.topMargin = dp(5);
+        card.addView(progressRow, progressRowParams);
+        redesignedPauseButton = redesignedSecondaryButton("暂停", "暂停轨迹");
+        redesignedPauseButton.setOnClickListener(view -> togglePause());
+        redesignedStopButton = redesignedPrimaryButton("停止模拟", "停止轨迹模拟");
+        redesignedStopButton.setOnClickListener(view -> {
+            sendTrajectoryAction(LocationContract.ACTION_STOP);
+            goToRedesignedPage(PAGE_EDITOR);
+        });
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.addView(redesignedPauseButton, new LinearLayout.LayoutParams(0, dp(50), 1f));
+        LinearLayout.LayoutParams stopParams = new LinearLayout.LayoutParams(0, dp(50), 1f);
+        stopParams.leftMargin = dp(8);
+        actions.addView(redesignedStopButton, stopParams);
+        LinearLayout.LayoutParams actionsParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(50));
+        actionsParams.topMargin = dp(12);
+        card.addView(actions, actionsParams);
+        redesignedRunningPage.addView(card, frameParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM, 14, 0, 14, 14));
+    }
+
+    private void buildRedesignedFavoritesPage() {
+        redesignedFavoritesPage.addView(redesignedToolbar("我的收藏", view -> goToRedesignedPage(PAGE_EDITOR)),
+                frameParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(54), Gravity.TOP, 14, 14, 14, 0));
+        redesignedFavoritesPage.setBackgroundColor(COLOR_BACKGROUND);
+        LinearLayout card = redesignedCard();
+        card.setPadding(dp(14), dp(14), dp(14), dp(14));
+        LinearLayout tabRow = new LinearLayout(this);
+        tabRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView allTab = label("全部", 14, COLOR_TEXT, Typeface.BOLD);
+        tabRow.addView(allTab, new LinearLayout.LayoutParams(0, dp(32), 1f));
+        TextView drawTab = label("自绘线路", 13, COLOR_SUBTLE, Typeface.NORMAL);
+        tabRow.addView(drawTab, new LinearLayout.LayoutParams(0, dp(32), 1f));
+        TextView planTab = label("导航线路", 13, COLOR_SUBTLE, Typeface.NORMAL);
+        tabRow.addView(planTab, new LinearLayout.LayoutParams(0, dp(32), 1f));
+        card.addView(tabRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(32)));
+        redesignedFavoriteList = new LinearLayout(this);
+        redesignedFavoriteList.setOrientation(LinearLayout.VERTICAL);
+        ScrollView scroll = new ScrollView(this);
+        scroll.setFillViewport(true);
+        scroll.addView(redesignedFavoriteList, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        card.addView(scroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        Button newRoute = redesignedPrimaryButton("新建线路", "新建一条线路");
+        newRoute.setOnClickListener(view -> {
+            clearRoute();
+            goToRedesignedPage(PAGE_EDITOR);
+        });
+        LinearLayout.LayoutParams newRouteParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(50));
+        newRouteParams.topMargin = dp(10);
+        card.addView(newRoute, newRouteParams);
+        redesignedFavoritesPage.addView(card, frameParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.TOP, 14, 82, 14, 14));
+    }
+
+    private void addRedesignedSpeedButton(LinearLayout row, String text, float value) {
+        Button button = redesignedSecondaryButton(text, text + " km/h");
+        button.setTag(value);
+        button.setTextSize(13);
+        button.setOnClickListener(view -> {
+            if (value < 0f) {
+                showSpeedDialog();
+            } else {
+                speedKmh = value;
+                refreshRedesignedPages();
+            }
+        });
+        redesignedSpeedButtons.add(button);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(42), 1f);
+        if (row.getChildCount() > 0) params.leftMargin = dp(6);
+        row.addView(button, params);
+    }
+
+    private void startRedesignedDrawing() {
+        if (running) {
+            Toast.makeText(this, "轨迹运行中，请先停止后再编辑", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        goToRedesignedPage(PAGE_DRAW);
+        toggleDrawingMode();
+    }
+
+    private void finishRedesignedDrawing() {
+        if (drawingMode) toggleDrawingMode();
+        else if (drawingPicking) disableDrawingMode();
+        goToRedesignedPage(PAGE_EDITOR);
+    }
+
+    private void goToRedesignedPage(int page) {
+        redesignedPage = page;
+        if (redesignedEditorPage == null) return;
+        // Keep the WebView measured at full size while pages cover it. AMap can
+        // initialize only after it has a non-zero viewport (important on Android 7).
+        mapView.setVisibility(View.VISIBLE);
+        redesignedHomePage.setVisibility(page == PAGE_HOME ? View.VISIBLE : View.GONE);
+        redesignedEditorPage.setVisibility(page == PAGE_EDITOR ? View.VISIBLE : View.GONE);
+        redesignedDrawPage.setVisibility(page == PAGE_DRAW ? View.VISIBLE : View.GONE);
+        redesignedSettingsPage.setVisibility(page == PAGE_SETTINGS ? View.VISIBLE : View.GONE);
+        redesignedRunningPage.setVisibility(page == PAGE_RUNNING ? View.VISIBLE : View.GONE);
+        redesignedFavoritesPage.setVisibility(page == PAGE_FAVORITES ? View.VISIBLE : View.GONE);
+        if (page == PAGE_FAVORITES) refreshRedesignedFavoriteList();
+        if (page == PAGE_DRAW) {
+            mapView.setCenterCrosshairVisible(false);
+            mapView.setRouteMarkersVisible(false);
+        } else if (!drawingMode && !drawingPicking) {
+            mapView.setCenterCrosshairVisible(true);
+            mapView.setRouteMarkersVisible(true);
+        }
+        refreshRedesignedPages();
+    }
+
+    private void showEditorMoreDialog() {
+        String[] actions = {"查看全线", "清空当前线路", "打开我的收藏"};
+        new AlertDialog.Builder(this)
+                .setTitle("更多路线工具")
+                .setItems(actions, (dialog, which) -> {
+                    if (which == 0) {
+                        mapView.fitRoute();
+                    } else if (which == 1) {
+                        clearRoute();
+                    } else {
+                        goToRedesignedPage(PAGE_FAVORITES);
+                    }
+                })
+                .show();
+    }
+
+    private void confirmDeleteFavoriteInline(FavoriteRoute favorite) {
+        new AlertDialog.Builder(this)
+                .setTitle("删除收藏")
+                .setMessage("确定删除“" + favorite.name + "”？")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("删除", (dialog, which) -> {
+                    favoriteRoutes.remove(favorite);
+                    persistFavoriteRoutes();
+                    refreshRedesignedFavoriteList();
+                    refreshPanelSections();
+                })
+                .show();
+    }
+
+    private void refreshRedesignedPages() {
+        if (redesignedRouteSummary != null) {
+            StringBuilder text = new StringBuilder();
+            if (routePoints.isEmpty()) text.append("起点：未设置");
+            else text.append("起点：").append(format(routePoints.get(0)));
+            if (routePoints.size() > 1) text.append("\n终点：").append(format(routePoints.get(routePoints.size() - 1)));
+            else text.append("\n终点：未设置");
+            redesignedRouteSummary.setText(text.toString());
+        }
+        if (redesignedRouteMeta != null) {
+            if (routePoints.size() < 2) {
+                redesignedRouteMeta.setText("选择起点和终点，或进入自绘线路");
+            } else {
+                String mode = routePlanMode.isEmpty() ? "自定义线路" : routePlanMode + "导航线路";
+                redesignedRouteMeta.setText(mode + " · " + formatDistance(routeDistanceMeters(routePoints))
+                        + (routePoints.size() > 2 ? " · 途经点 " + (routePoints.size() - 2) + " 个" : ""));
+            }
+        }
+        if (redesignedHomeSummary != null) {
+            StringBuilder homeText = new StringBuilder();
+            if (routePoints.isEmpty()) homeText.append("起点：未设置");
+            else homeText.append("起点：").append(format(routePoints.get(0)));
+            if (routePoints.size() > 1) homeText.append("\n终点：").append(format(routePoints.get(routePoints.size() - 1)));
+            else homeText.append("\n终点：未设置");
+            redesignedHomeSummary.setText(homeText.toString());
+        }
+        if (redesignedHomeMeta != null) {
+            redesignedHomeMeta.setText(routePoints.size() >= 2
+                    ? (routePlanMode.isEmpty() ? "线路已准备好 · " + formatDistance(routeDistanceMeters(routePoints))
+                    : "已生成" + routePlanMode + "导航线路 · " + formatDistance(routeDistanceMeters(routePoints)))
+                    : "准备新建一条线路");
+        }
+        if (redesignedHomeRecent != null) {
+            if (favoriteRoutes.isEmpty()) {
+                redesignedHomeRecent.setText("暂无最近线路\n完成路线后会显示在这里");
+            } else {
+                StringBuilder recent = new StringBuilder();
+                int count = Math.min(3, favoriteRoutes.size());
+                for (int index = 0; index < count; index++) {
+                    if (index > 0) recent.append('\n');
+                    FavoriteRoute favorite = favoriteRoutes.get(index);
+                    recent.append(favorite.name).append("  ·  ")
+                            .append(formatDistance(routeDistanceMeters(favorite.points)));
+                }
+                redesignedHomeRecent.setText(recent.toString());
+            }
+        }
+        if (redesignedNextButton != null) {
+            boolean ready = !running && !drawingMode && !drawingPicking && routePoints.size() >= 2;
+            redesignedNextButton.setEnabled(ready);
+            redesignedNextButton.setAlpha(ready ? 1f : 0.55f);
+        }
+        if (redesignedPlanButton != null) {
+            boolean enabled = !running && !drawingMode && !drawingPicking
+                    && !planningRoute && routePoints.size() >= 2;
+            redesignedPlanButton.setEnabled(enabled);
+            redesignedPlanButton.setAlpha(enabled ? 1f : 0.55f);
+            if (!planningRoute) redesignedPlanButton.setText("生成导航线路");
+        }
+        if (redesignedSettingsSpeed != null) {
+            redesignedSettingsSpeed.setText(String.format(Locale.US, "%.1f km/h", speedKmh));
+        }
+        if (redesignedSettingsSummary != null) {
+            redesignedSettingsSummary.setText(routePoints.size() >= 2
+                    ? (routePlanMode.isEmpty() ? "自定义线路" : routePlanMode + "导航线路")
+                    : "尚未完成路线");
+        }
+        if (redesignedSettingsDetail != null) {
+            double meters = routeDistanceMeters(routePoints);
+            redesignedSettingsDetail.setText(routePoints.size() >= 2
+                    ? formatDistance(meters) + " · 预计用时 " + estimateDuration(meters, speedKmh)
+                    : "先返回路线编辑完成起点和终点");
+        }
+        if (redesignedSettingsStartButton != null) {
+            boolean canStart = !running && routePoints.size() >= 2;
+            redesignedSettingsStartButton.setEnabled(canStart);
+            redesignedSettingsStartButton.setAlpha(canStart ? 1f : 0.55f);
+        }
+        if (redesignedLoopButton != null) {
+            redesignedLoopButton.setText(loop ? "循环播放：开" : "循环播放：关");
+        }
+        for (Button button : redesignedSpeedButtons) {
+            Object tag = button.getTag();
+            boolean active = tag instanceof Float && ((Float) tag) >= 0f
+                    && Math.abs(((Float) tag) - speedKmh) < 0.01f;
+            button.setBackground(rounded(active ? COLOR_ACCENT : COLOR_MUTED, 12,
+                    COLOR_BORDER, 2));
+        }
+        if (redesignedDrawStatus != null) {
+            redesignedDrawStatus.setText(drawingPicking
+                    ? "拖动地图调整起点 · 确认后开始绘制"
+                    : "已绘制 " + drawnSegments.size() + " 段 · 拖动地图继续绘制");
+        }
+        if (redesignedDrawConfirmButton != null) {
+            redesignedDrawConfirmButton.setText(drawingPicking ? "确认起点" : "继续绘制");
+            redesignedDrawFinishButton.setEnabled(drawingMode || drawingPicking || !drawnSegments.isEmpty());
+            redesignedDrawUndoButton.setEnabled(!drawnSegments.isEmpty());
+            redesignedDrawUndoButton.setAlpha(drawnSegments.isEmpty() ? 0.55f : 1f);
+        }
+        if (redesignedRunningStatus != null) {
+            redesignedRunningStatus.setText(running ? (paused ? "已暂停" : "进行中") : "未运行");
+        }
+        if (redesignedRunningMetrics != null) {
+            double routeMeters = routeDistanceMeters(routePoints);
+            double travelled = routeMeters * Math.max(0d, Math.min(1d, playbackProgress));
+            redesignedRunningMetrics.setText(String.format(Locale.US,
+                    "速度 %.1f km/h\n已用距离 %s · 剩余距离 %s",
+                    speedKmh, formatDistance(travelled), formatDistance(Math.max(0d, routeMeters - travelled))));
+        }
+        if (redesignedRunningProgress != null) {
+            redesignedRunningProgress.setText(String.format(Locale.US, "%.0f%%", playbackProgress * 100d));
+        }
+        if (redesignedProgressBar != null) {
+            redesignedProgressBar.setProgress((int) Math.round(Math.max(0d, Math.min(1d, playbackProgress)) * 1000d));
+        }
+        if (redesignedPauseButton != null) {
+            redesignedPauseButton.setEnabled(running);
+            redesignedPauseButton.setText(paused ? "继续" : "暂停");
+            redesignedPauseButton.setAlpha(running ? 1f : 0.55f);
+        }
+    }
+
+    private void refreshRedesignedFavoriteList() {
+        if (redesignedFavoriteList == null) return;
+        redesignedFavoriteList.removeAllViews();
+        if (favoriteRoutes.isEmpty()) {
+            TextView empty = label("还没有收藏线路\n完成线路后可以在这里快速载入", 14, COLOR_SUBTLE, Typeface.NORMAL);
+            empty.setGravity(Gravity.CENTER);
+            redesignedFavoriteList.addView(empty, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(150)));
+            return;
+        }
+        for (FavoriteRoute favorite : new ArrayList<>(favoriteRoutes)) {
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(12), dp(9), dp(8), dp(9));
+            row.setBackground(rounded(COLOR_MUTED, 14, COLOR_BORDER, 1));
+            TextView info = label(favorite.name + "\n"
+                            + formatDistance(routeDistanceMeters(favorite.points)) + " · 自绘线路 · "
+                            + android.text.format.DateFormat.format("yyyy/MM/dd", new Date(favorite.createdAt)),
+                    13, COLOR_TEXT, Typeface.BOLD);
+            info.setLineSpacing(dp(2), 1f);
+            row.addView(info, new LinearLayout.LayoutParams(0, dp(58), 1f));
+            Button load = compactButton("载入", "载入" + favorite.name);
+            load.setOnClickListener(view -> {
+                loadFavoriteRoute(favorite);
+                goToRedesignedPage(PAGE_EDITOR);
+            });
+            row.addView(load, new LinearLayout.LayoutParams(dp(58), dp(40)));
+            Button delete = compactButton("删除", "删除" + favorite.name);
+            delete.setTextColor(COLOR_DANGER);
+            LinearLayout.LayoutParams deleteParams = new LinearLayout.LayoutParams(dp(58), dp(40));
+            deleteParams.leftMargin = dp(6);
+            row.addView(delete, deleteParams);
+            delete.setOnClickListener(view -> {
+                confirmDeleteFavoriteInline(favorite);
+            });
+            LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            rowParams.bottomMargin = dp(7);
+            redesignedFavoriteList.addView(row, rowParams);
+        }
     }
 
     private void refreshPanelSections() {
@@ -476,6 +1282,28 @@ public final class TrajectoryActivity extends Activity {
         if (segmentTools != null) {
             boolean showSegmentTools = editing && (routePoints.size() > 1 || !drawnSegments.isEmpty());
             segmentTools.setVisibility(showSegmentTools ? View.VISIBLE : View.GONE);
+        }
+        if (favoriteTools != null) {
+            favoriteTools.setVisibility(editing ? View.VISIBLE : View.GONE);
+        }
+        if (navigationTools != null) {
+            navigationTools.setVisibility(editing ? View.VISIBLE : View.GONE);
+        }
+        if (saveFavoriteButton != null) {
+            boolean canSave = editing && !running && !drawingMode && !drawingPicking
+                    && drawnSegments.size() > 0 && routePoints.size() > 1;
+            saveFavoriteButton.setEnabled(canSave);
+            saveFavoriteButton.setAlpha(canSave ? 1f : 0.55f);
+        }
+        if (planRouteButton != null) {
+            boolean canPlan = editing && !running && !drawingMode && !drawingPicking
+                    && !planningRoute && routePoints.size() >= 2;
+            planRouteButton.setEnabled(canPlan);
+            planRouteButton.setAlpha(canPlan ? 1f : 0.55f);
+            if (!planningRoute) planRouteButton.setText("生成导航线路");
+        }
+        if (favoriteListButton != null) {
+            favoriteListButton.setText(favoriteButtonText());
         }
         moreRouteButton.setText(moreRouteExpanded ? "收起更多工具" : "更多路线工具");
         editRouteButton.setText(editing ? "收起编辑" : "编辑路线");
@@ -490,6 +1318,12 @@ public final class TrajectoryActivity extends Activity {
     private void refreshDrawingFocusMode() {
         if (panel == null || drawingFocusBar == null) return;
         boolean drawing = drawingMode || drawingPicking;
+        if (redesignedPages != null) {
+            mapView.setCenterCrosshairVisible(!drawing);
+            mapView.setRouteMarkersVisible(!drawing);
+            refreshRedesignedPages();
+            return;
+        }
         boolean focus = drawing && !drawingFocusExpanded;
         if (mapView != null) {
             mapView.setCenterCrosshairVisible(!drawing);
@@ -543,6 +1377,7 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private void onMapTap(double latitude, double longitude) {
+        if (redesignedPage != PAGE_EDITOR) return;
         if (running || drawingMode || drawingPicking) {
             if (running) {
             Toast.makeText(this, "轨迹运行中，请先停止后再编辑", Toast.LENGTH_SHORT).show();
@@ -550,6 +1385,7 @@ public final class TrajectoryActivity extends Activity {
             return;
         }
         if (!drawnSegments.isEmpty()) drawnSegments.clear();
+        routePlanMode = "";
         AmapWebMapView.RoutePoint point = new AmapWebMapView.RoutePoint(latitude, longitude);
         if (selectionMode == 0) {
             if (routePoints.isEmpty()) routePoints.add(point);
@@ -584,6 +1420,8 @@ public final class TrajectoryActivity extends Activity {
                 routeHint.setText(drawnSegments.isEmpty()
                         ? "蓝色准星固定在中心；拖动地图绘制线路，松手完成一段"
                         : "已完成 " + drawnSegments.size() + " 段；继续拖动地图绘制，点击“结束绘制”完成");
+            } else if (!routePlanMode.isEmpty()) {
+                routeHint.setText("已生成" + routePlanMode + "导航线路，可直接开始轨迹");
             } else {
                 routeHint.setText(drawnSegments.isEmpty()
                         ? (editingExpanded ? "选择起点、终点或自绘；蓝色准星就是实际落点"
@@ -593,6 +1431,7 @@ public final class TrajectoryActivity extends Activity {
             }
         }
         setSelectionMode(selectionMode);
+        refreshRedesignedPages();
     }
 
     private void toggleDrawingMode() {
@@ -601,6 +1440,7 @@ public final class TrajectoryActivity extends Activity {
             return;
         }
         if (!drawingMode && !drawingPicking) {
+            routePlanMode = "";
             editingExpanded = true;
             playbackExpanded = false;
             drawingFocusExpanded = false;
@@ -733,12 +1573,324 @@ public final class TrajectoryActivity extends Activity {
             return;
         }
         disableDrawingMode();
+        routePlanMode = "";
         drawnSegments.clear();
         routePoints.clear();
         routePoints.add(new AmapWebMapView.RoutePoint(
                 readDoublePreference(LocationContract.KEY_LATITUDE, LocationContract.DEFAULT_LATITUDE),
                 readDoublePreference(LocationContract.KEY_LONGITUDE, LocationContract.DEFAULT_LONGITUDE)));
         refreshRoute();
+    }
+
+    private void showRoutePlannerDialog() {
+        if (running || drawingMode || drawingPicking || planningRoute) return;
+        if (routePoints.size() < 2) {
+            Toast.makeText(this, "请先设置起点和终点", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String[] labels = {"驾车", "步行", "骑行"};
+        int[] selected = {0};
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("选择导航方式")
+                .setSingleChoiceItems(labels, selected[0], (choiceDialog, which) -> selected[0] = which)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("开始规划", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(view -> {
+                    String mode = selected[0] == 1 ? "walking"
+                            : (selected[0] == 2 ? "riding" : "driving");
+                    dialog.dismiss();
+                    requestRoutePlan(mode);
+                }));
+        dialog.show();
+    }
+
+    private void requestRoutePlan(String mode) {
+        if (routePoints.size() < 2) return;
+        clearRoutePlanTimeout();
+        planningRoute = true;
+        planRouteButton.setText("正在规划…");
+        routeHint.setText("正在生成" + routeModeLabel(mode) + "导航线路，请稍候");
+        refreshPanelSections();
+        routePlanTimeout = () -> {
+            if (!planningRoute) return;
+            planningRoute = false;
+            if (planRouteButton != null) planRouteButton.setText("生成导航线路");
+            refreshPanelSections();
+            Toast.makeText(TrajectoryActivity.this,
+                    "导航服务响应超时，请检查网络后重试", Toast.LENGTH_LONG).show();
+        };
+        mainHandler.postDelayed(routePlanTimeout, 15_000L);
+        mapView.planRoute(mode, routePoints.get(0), routePoints.get(routePoints.size() - 1));
+    }
+
+    private void clearRoutePlanTimeout() {
+        if (routePlanTimeout != null) {
+            mainHandler.removeCallbacks(routePlanTimeout);
+            routePlanTimeout = null;
+        }
+    }
+
+    private void handleRoutePlanned(String mode, List<AmapWebMapView.RoutePoint> points) {
+        planningRoute = false;
+        ArrayList<AmapWebMapView.RoutePoint> planned = copyRoutePoints(
+                points, MAX_FAVORITE_POINTS);
+        if (planned.size() < 2) {
+            if (planRouteButton != null) planRouteButton.setText("生成导航线路");
+            refreshPanelSections();
+            Toast.makeText(this, "高德没有返回可用的导航线路", Toast.LENGTH_LONG).show();
+            return;
+        }
+        disableDrawingMode();
+        routePlanMode = routeModeLabel(mode);
+        routePoints.clear();
+        routePoints.addAll(planned);
+        drawnSegments.clear();
+        selectionMode = 1;
+        editingExpanded = true;
+        playbackExpanded = false;
+        moreRouteExpanded = false;
+        refreshRoute();
+        updatePlaybackButtons();
+        mapView.fitRouteEndpoints();
+        Toast.makeText(this, "已生成" + routePlanMode + "导航线路，共 "
+                + routePoints.size() + " 个道路点", Toast.LENGTH_SHORT).show();
+    }
+
+    private String routeModeLabel(String mode) {
+        if ("walking".equals(mode)) return "步行";
+        if ("riding".equals(mode)) return "骑行";
+        return "驾车";
+    }
+
+    private String favoriteButtonText() {
+        return favoriteRoutes.isEmpty() ? "收藏" : "收藏 " + favoriteRoutes.size();
+    }
+
+    private void saveCurrentRouteAsFavorite() {
+        if (running || drawingMode || drawingPicking) {
+            Toast.makeText(this, "请先结束自绘并停止轨迹", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (drawnSegments.isEmpty() || routePoints.size() < 2) {
+            Toast.makeText(this, "请先完成一条自绘线路", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        EditText nameField = new EditText(this);
+        nameField.setSingleLine(true);
+        nameField.setHint("例如：家到公司");
+        nameField.setText("自绘线路 " + (favoriteRoutes.size() + 1));
+        nameField.setSelectAllOnFocus(true);
+        nameField.setTextSize(15);
+        nameField.setTextColor(COLOR_TEXT);
+        nameField.setHintTextColor(COLOR_SUBTLE);
+        nameField.setPadding(dp(14), 0, dp(14), 0);
+        nameField.setBackground(rounded(COLOR_CARD, 12, COLOR_BORDER, 1));
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("收藏自绘线路")
+                .setMessage("给这条线路起个容易识别的名称")
+                .setView(nameField)
+                .setNegativeButton("取消", null)
+                .setPositiveButton("保存", null)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(view -> {
+                    String name = nameField.getText().toString().trim();
+                    if (name.isEmpty()) {
+                        nameField.setError("请输入线路名称");
+                        return;
+                    }
+                    ArrayList<AmapWebMapView.RoutePoint> points = copyRoutePoints(
+                            routePoints, MAX_FAVORITE_POINTS);
+                    if (points.size() < 2) {
+                        Toast.makeText(this, "线路点不足，无法收藏", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    favoriteRoutes.add(0, new FavoriteRoute(name,
+                            System.currentTimeMillis(), points));
+                    while (favoriteRoutes.size() > MAX_FAVORITE_ROUTES) {
+                        favoriteRoutes.remove(favoriteRoutes.size() - 1);
+                    }
+                    persistFavoriteRoutes();
+                    refreshPanelSections();
+                    dialog.dismiss();
+                    Toast.makeText(this, "已收藏“" + name + "”", Toast.LENGTH_SHORT).show();
+                }));
+        dialog.show();
+    }
+
+    private ArrayList<AmapWebMapView.RoutePoint> copyRoutePoints(
+            List<AmapWebMapView.RoutePoint> source, int maximumPoints) {
+        if (source == null || source.isEmpty()) return new ArrayList<>();
+        ArrayList<AmapWebMapView.RoutePoint> result = new ArrayList<>();
+        if (source.size() <= maximumPoints) {
+            for (AmapWebMapView.RoutePoint point : source) {
+                if (point != null && Double.isFinite(point.latitude)
+                        && Double.isFinite(point.longitude)) {
+                    result.add(new AmapWebMapView.RoutePoint(point.latitude, point.longitude));
+                }
+            }
+            return result;
+        }
+        ArrayList<AmapWebMapView.RoutePoint> sampled = simplifyDrawnPath(source, maximumPoints);
+        for (AmapWebMapView.RoutePoint point : sampled) {
+            if (point != null && Double.isFinite(point.latitude)
+                    && Double.isFinite(point.longitude)) {
+                result.add(new AmapWebMapView.RoutePoint(point.latitude, point.longitude));
+            }
+        }
+        return result;
+    }
+
+    private void loadFavoriteRoutes() {
+        favoriteRoutes.clear();
+        if (favoritePreferences == null) return;
+        String raw = favoritePreferences.getString(KEY_FAVORITE_ROUTES, "");
+        if (raw.isEmpty()) return;
+        try {
+            JSONArray routes = new JSONArray(raw);
+            for (int routeIndex = 0;
+                 routeIndex < routes.length() && favoriteRoutes.size() < MAX_FAVORITE_ROUTES;
+                 routeIndex++) {
+                JSONObject route = routes.optJSONObject(routeIndex);
+                if (route == null) continue;
+                String name = route.optString("name", "").trim();
+                JSONArray pointsJson = route.optJSONArray("points");
+                if (name.isEmpty() || pointsJson == null) continue;
+                ArrayList<AmapWebMapView.RoutePoint> points = new ArrayList<>();
+                for (int pointIndex = 0;
+                     pointIndex < pointsJson.length() && points.size() < MAX_FAVORITE_POINTS;
+                     pointIndex++) {
+                    JSONObject point = pointsJson.optJSONObject(pointIndex);
+                    if (point == null) continue;
+                    double latitude = point.optDouble("latitude", Double.NaN);
+                    double longitude = point.optDouble("longitude", Double.NaN);
+                    if (Double.isFinite(latitude) && Double.isFinite(longitude)) {
+                        points.add(new AmapWebMapView.RoutePoint(latitude, longitude));
+                    }
+                }
+                if (points.size() >= 2) {
+                    favoriteRoutes.add(new FavoriteRoute(name,
+                            route.optLong("createdAt", 0L), points));
+                }
+            }
+        } catch (Exception exception) {
+            favoriteRoutes.clear();
+        }
+    }
+
+    private void persistFavoriteRoutes() {
+        if (favoritePreferences == null) return;
+        JSONArray routes = new JSONArray();
+        for (FavoriteRoute favorite : favoriteRoutes) {
+            JSONObject route = new JSONObject();
+            JSONArray points = new JSONArray();
+            try {
+                route.put("name", favorite.name);
+                route.put("createdAt", favorite.createdAt);
+                for (AmapWebMapView.RoutePoint point : favorite.points) {
+                    JSONObject pointJson = new JSONObject();
+                    pointJson.put("latitude", point.latitude);
+                    pointJson.put("longitude", point.longitude);
+                    points.put(pointJson);
+                }
+                route.put("points", points);
+                routes.put(route);
+            } catch (Exception ignored) {
+            }
+        }
+        favoritePreferences.edit().putString(KEY_FAVORITE_ROUTES, routes.toString()).apply();
+    }
+
+    private void showFavoriteRoutesDialog() {
+        if (favoriteRoutes.isEmpty()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("我的收藏")
+                    .setMessage("还没有收藏线路。完成自绘后，在“编辑路线”中点击“收藏线路”即可保存。")
+                    .setPositiveButton("知道了", null)
+                    .show();
+            return;
+        }
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        list.setPadding(dp(2), dp(2), dp(2), dp(2));
+        ScrollView scrollView = new ScrollView(this);
+        scrollView.setFillViewport(true);
+        scrollView.addView(list, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("我的收藏（" + favoriteRoutes.size() + "）")
+                .setView(scrollView)
+                .setNegativeButton("关闭", null)
+                .create();
+        for (FavoriteRoute favorite : new ArrayList<>(favoriteRoutes)) {
+            LinearLayout row = new LinearLayout(this);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(12), dp(8), dp(8), dp(8));
+            row.setBackground(rounded(COLOR_MUTED, 14, COLOR_BORDER, 1));
+            TextView info = label(favorite.name + "\n" + favorite.points.size() + " 个轨迹点",
+                    13, COLOR_TEXT, Typeface.BOLD);
+            info.setLineSpacing(dp(2), 1f);
+            row.addView(info, new LinearLayout.LayoutParams(0, dp(54), 1f));
+            Button loadButton = compactButton("载入", "载入" + favorite.name);
+            loadButton.setTextSize(12);
+            loadButton.setOnClickListener(view -> {
+                dialog.dismiss();
+                loadFavoriteRoute(favorite);
+            });
+            row.addView(loadButton, new LinearLayout.LayoutParams(dp(58), dp(38)));
+            Button deleteButton = compactButton("删除", "删除" + favorite.name);
+            deleteButton.setTextSize(12);
+            deleteButton.setTextColor(COLOR_DANGER);
+            LinearLayout.LayoutParams deleteParams = new LinearLayout.LayoutParams(dp(58), dp(38));
+            deleteParams.leftMargin = dp(6);
+            row.addView(deleteButton, deleteParams);
+            deleteButton.setOnClickListener(view -> confirmDeleteFavorite(dialog, favorite));
+            LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            rowParams.bottomMargin = dp(7);
+            list.addView(row, rowParams);
+        }
+        dialog.show();
+    }
+
+    private void confirmDeleteFavorite(AlertDialog listDialog, FavoriteRoute favorite) {
+        new AlertDialog.Builder(this)
+                .setTitle("删除收藏")
+                .setMessage("确定删除“" + favorite.name + "”？")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("删除", (dialog, which) -> {
+                    favoriteRoutes.remove(favorite);
+                    persistFavoriteRoutes();
+                    refreshPanelSections();
+                    listDialog.dismiss();
+                    showFavoriteRoutesDialog();
+                })
+                .show();
+    }
+
+    private void loadFavoriteRoute(FavoriteRoute favorite) {
+        if (running) {
+            Toast.makeText(this, "请先停止轨迹", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        disableDrawingMode();
+        routePlanMode = "";
+        routePoints.clear();
+        ArrayList<AmapWebMapView.RoutePoint> points = copyRoutePoints(
+                favorite.points, MAX_FAVORITE_POINTS);
+        routePoints.addAll(points);
+        drawnSegments.clear();
+        if (points.size() >= 2) drawnSegments.add(new ArrayList<>(points));
+        selectionMode = 1;
+        editingExpanded = true;
+        playbackExpanded = false;
+        moreRouteExpanded = false;
+        refreshRoute();
+        updatePlaybackButtons();
+        mapView.fitRoute();
+        Toast.makeText(this, "已载入“" + favorite.name + "”", Toast.LENGTH_SHORT).show();
     }
 
     private void setSelectionMode(int mode) {
@@ -803,8 +1955,12 @@ public final class TrajectoryActivity extends Activity {
         else startService(intent);
         running = true;
         paused = false;
+        playbackProgress = 0d;
+        playbackLatitude = routePoints.get(0).latitude;
+        playbackLongitude = routePoints.get(0).longitude;
         playbackStatus.setText("正在启动轨迹…");
         updatePlaybackButtons();
+        goToRedesignedPage(PAGE_RUNNING);
     }
 
     private void configureRootAppOp() {
@@ -973,7 +2129,27 @@ public final class TrajectoryActivity extends Activity {
     }
 
     @Override
+    @SuppressWarnings("deprecation")
+    public void onBackPressed() {
+        if (redesignedPage == PAGE_RUNNING && running) {
+            Toast.makeText(this, "请先停止轨迹", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (redesignedPage == PAGE_HOME) {
+            super.onBackPressed();
+        } else if (redesignedPage == PAGE_DRAW) {
+            finishRedesignedDrawing();
+        } else if (redesignedPage == PAGE_SETTINGS || redesignedPage == PAGE_FAVORITES
+                || redesignedPage == PAGE_RUNNING) {
+            goToRedesignedPage(PAGE_EDITOR);
+        } else {
+            goToRedesignedPage(PAGE_HOME);
+        }
+    }
+
+    @Override
     protected void onDestroy() {
+        clearRoutePlanTimeout();
         if (receiverRegistered) unregisterReceiver(trajectoryReceiver);
         if (mapView != null) mapView.onDestroy();
         rootExecutor.shutdownNow();
@@ -993,6 +2169,37 @@ public final class TrajectoryActivity extends Activity {
         return String.format(Locale.US, "%.5f, %.5f", point.latitude, point.longitude);
     }
 
+    private double routeDistanceMeters(List<AmapWebMapView.RoutePoint> points) {
+        if (points == null || points.size() < 2) return 0d;
+        double total = 0d;
+        for (int index = 1; index < points.size(); index++) {
+            AmapWebMapView.RoutePoint previous = points.get(index - 1);
+            AmapWebMapView.RoutePoint current = points.get(index);
+            if (previous == null || current == null) continue;
+            double latitude = Math.toRadians((previous.latitude + current.latitude) / 2d);
+            double dLat = Math.toRadians(current.latitude - previous.latitude);
+            double dLng = Math.toRadians(current.longitude - previous.longitude);
+            double a = Math.sin(dLat / 2d) * Math.sin(dLat / 2d)
+                    + Math.cos(Math.toRadians(previous.latitude))
+                    * Math.cos(Math.toRadians(current.latitude))
+                    * Math.sin(dLng / 2d) * Math.sin(dLng / 2d);
+            total += 6_371_000d * 2d * Math.atan2(Math.sqrt(a), Math.sqrt(Math.max(0d, 1d - a)));
+        }
+        return total;
+    }
+
+    private String formatDistance(double meters) {
+        if (meters < 1000d) return String.format(Locale.US, "%.0f 米", Math.max(0d, meters));
+        return String.format(Locale.US, "%.1f 公里", meters / 1000d);
+    }
+
+    private String estimateDuration(double meters, float kmh) {
+        if (meters <= 0d || kmh <= 0f) return "--";
+        long minutes = Math.max(1L, Math.round(meters / 1000d / kmh * 60d));
+        if (minutes < 60L) return minutes + " 分钟";
+        return (minutes / 60L) + " 小时 " + (minutes % 60L) + " 分钟";
+    }
+
     private double readDoublePreference(String key, double fallback) {
         return Double.longBitsToDouble(preferences.getLong(key, Double.doubleToRawLongBits(fallback)));
     }
@@ -1003,6 +2210,16 @@ public final class TrajectoryActivity extends Activity {
         button.setTextSize(13);
         button.setBackground(rounded(COLOR_MUTED, 12, COLOR_BORDER, 2));
         button.setPadding(dp(4), 0, dp(4), 0);
+        return button;
+    }
+
+    private ImageButton centeredBackButton(String description) {
+        ImageButton button = new ImageButton(this);
+        button.setImageResource(R.drawable.ic_back_chevron);
+        button.setScaleType(ImageView.ScaleType.CENTER);
+        button.setContentDescription(description);
+        button.setPadding(0, 0, 0, 0);
+        button.setBackground(rounded(COLOR_MUTED, 12, COLOR_BORDER, 2));
         return button;
     }
 
@@ -1047,5 +2264,18 @@ public final class TrajectoryActivity extends Activity {
 
     private int dp(float value) {
         return Math.round(value * getResources().getDisplayMetrics().density);
+    }
+
+    private static final class FavoriteRoute {
+        final String name;
+        final long createdAt;
+        final ArrayList<AmapWebMapView.RoutePoint> points;
+
+        FavoriteRoute(String name, long createdAt,
+                      ArrayList<AmapWebMapView.RoutePoint> points) {
+            this.name = name;
+            this.createdAt = createdAt;
+            this.points = points;
+        }
     }
 }

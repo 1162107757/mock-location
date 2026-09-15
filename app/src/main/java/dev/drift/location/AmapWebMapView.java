@@ -46,6 +46,12 @@ final class AmapWebMapView extends FrameLayout {
         void onDrawPath(List<RoutePoint> points);
     }
 
+    interface OnRoutePlanListener {
+        void onRoutePlanned(String mode, List<RoutePoint> points);
+
+        void onRoutePlanFailed(String message);
+    }
+
     static final class RoutePoint {
         final double latitude;
         final double longitude;
@@ -65,6 +71,7 @@ final class AmapWebMapView extends FrameLayout {
     private OnSearchResultListener searchResultListener;
     private OnMapTapListener mapTapListener;
     private OnDrawPathListener drawPathListener;
+    private OnRoutePlanListener routePlanListener;
     private double centerLatitude = LocationContract.DEFAULT_LATITUDE;
     private double centerLongitude = LocationContract.DEFAULT_LONGITUDE;
     private float zoom = 13f;
@@ -155,6 +162,10 @@ final class AmapWebMapView extends FrameLayout {
         drawPathListener = listener;
     }
 
+    void setOnRoutePlanListener(OnRoutePlanListener listener) {
+        routePlanListener = listener;
+    }
+
     void setDrawingEnabled(boolean enabled) {
         pendingDrawingEnabled = enabled;
         if (mapReady) evaluate("setDrawingEnabled(" + (enabled ? "true" : "false") + ")");
@@ -206,6 +217,10 @@ final class AmapWebMapView extends FrameLayout {
         if (mapReady) evaluate("fitRoute()");
     }
 
+    void fitRouteEndpoints() {
+        if (mapReady) evaluate("fitRouteEndpoints()");
+    }
+
     void zoomToAtLeast(int targetZoom) {
         zoom = Math.max(zoom, Math.min(targetZoom, 20));
         if (mapReady) evaluate("setZoom(" + number(zoom) + ")");
@@ -217,6 +232,26 @@ final class AmapWebMapView extends FrameLayout {
             return;
         }
         evaluate("searchLocation(" + quote(query) + ")");
+    }
+
+    void planRoute(String mode, RoutePoint start, RoutePoint end) {
+        if (start == null || end == null
+                || !Double.isFinite(start.latitude) || !Double.isFinite(start.longitude)
+                || !Double.isFinite(end.latitude) || !Double.isFinite(end.longitude)) {
+            notifyRoutePlanFailed("起点或终点坐标无效");
+            return;
+        }
+        if (!mapReady) {
+            notifyRoutePlanFailed("地图尚未加载完成，请稍后再试");
+            return;
+        }
+        CoordinateTransform.Coordinate startGcj = CoordinateTransform.wgs84ToGcj02(
+                start.latitude, start.longitude);
+        CoordinateTransform.Coordinate endGcj = CoordinateTransform.wgs84ToGcj02(
+                end.latitude, end.longitude);
+        evaluate("planRoute(" + quote(mode) + ","
+                + number(startGcj.latitude) + "," + number(startGcj.longitude) + ","
+                + number(endGcj.latitude) + "," + number(endGcj.longitude) + ")");
     }
 
     void setRoute(List<RoutePoint> points) {
@@ -268,6 +303,18 @@ final class AmapWebMapView extends FrameLayout {
         webView.destroy();
     }
 
+    void reloadMap() {
+        if (destroyed) return;
+        mapReady = false;
+        webView.loadDataWithBaseURL(
+                "https://localhost/",
+                buildHtml(),
+                "text/html",
+                "UTF-8",
+                null
+        );
+    }
+
     void onSaveInstanceState(Bundle outState) {
         // The center is persisted by MainActivity; reloading the small HTML page is safer
         // than serializing a WebView's remote page state on Android 7.1.
@@ -285,6 +332,10 @@ final class AmapWebMapView extends FrameLayout {
 
     private void notifySearchFailed(String message) {
         if (searchResultListener != null) searchResultListener.onSearchFailed(message);
+    }
+
+    private void notifyRoutePlanFailed(String message) {
+        if (routePlanListener != null) routePlanListener.onRoutePlanFailed(message);
     }
 
     private void notifyMapError(String message) {
@@ -332,6 +383,11 @@ final class AmapWebMapView extends FrameLayout {
     }
 
     private final class JavaScriptBridge {
+        @JavascriptInterface
+        public void retryMap() {
+            mainHandler.post(() -> reloadMap());
+        }
+
         @JavascriptInterface
         public void onMapReady() {
             mainHandler.post(() -> {
@@ -388,6 +444,17 @@ final class AmapWebMapView extends FrameLayout {
         }
 
         @JavascriptInterface
+        public void onRoutePlanned(String mode, String json) {
+            mainHandler.post(() -> deliverRoutePlan(mode, json));
+        }
+
+        @JavascriptInterface
+        public void onRoutePlanError(String message) {
+            mainHandler.post(() -> notifyRoutePlanFailed(
+                    message == null ? "高德路线规划失败" : message));
+        }
+
+        @JavascriptInterface
         public void onMapError(String message) {
             mainHandler.post(() -> notifyMapError(
                     message == null ? "高德 JS 地图加载失败" : message));
@@ -440,6 +507,33 @@ final class AmapWebMapView extends FrameLayout {
             points.clear();
         }
         drawPathListener.onDrawPath(points);
+    }
+
+    private void deliverRoutePlan(String mode, String json) {
+        if (routePlanListener == null) return;
+        ArrayList<RoutePoint> points = new ArrayList<>();
+        try {
+            JSONArray array = new JSONArray(json == null ? "[]" : json);
+            for (int index = 0; index < array.length(); index++) {
+                JSONObject item = array.optJSONObject(index);
+                if (item == null) continue;
+                double gcjLatitude = item.optDouble("latitude", Double.NaN);
+                double gcjLongitude = item.optDouble("longitude", Double.NaN);
+                if (!Double.isFinite(gcjLatitude) || !Double.isFinite(gcjLongitude)) continue;
+                CoordinateTransform.Coordinate wgs84 = CoordinateTransform.gcj02ToWgs84(
+                        gcjLatitude, gcjLongitude);
+                if (Double.isFinite(wgs84.latitude) && Double.isFinite(wgs84.longitude)) {
+                    points.add(new RoutePoint(wgs84.latitude, wgs84.longitude));
+                }
+            }
+        } catch (Exception ignored) {
+            points.clear();
+        }
+        if (points.size() < 2) {
+            notifyRoutePlanFailed("高德没有返回可用的导航线路");
+            return;
+        }
+        routePlanListener.onRoutePlanned(mode == null ? "driving" : mode, points);
     }
 
     static final class SearchResult {

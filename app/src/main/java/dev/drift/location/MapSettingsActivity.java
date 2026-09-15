@@ -19,6 +19,8 @@ import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageButton;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -82,13 +84,26 @@ public final class MapSettingsActivity extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(14), dp(8), dp(14), dp(8));
+        header.setPadding(dp(6), dp(4), dp(14), dp(4));
         header.setBackground(rounded(COLOR_CARD, 18, COLOR_BORDER, 2));
 
-        Button backButton = actionButton(required ? "退出" : "‹", COLOR_INPUT, COLOR_TEXT, 13);
+        View backButton;
+        if (required) {
+            Button exitButton = actionButton("退出", COLOR_INPUT, COLOR_TEXT, 13);
+            exitButton.setPadding(dp(4), 0, dp(4), 0);
+            exitButton.setBackground(rounded(COLOR_INPUT, 12, COLOR_BORDER, 2));
+            backButton = exitButton;
+        } else {
+            ImageButton arrowButton = new ImageButton(this);
+            arrowButton.setImageResource(R.drawable.ic_back_chevron);
+            arrowButton.setScaleType(ImageView.ScaleType.CENTER);
+            arrowButton.setPadding(0, 0, 0, 0);
+            arrowButton.setBackground(rounded(COLOR_INPUT, 12, COLOR_BORDER, 2));
+            backButton = arrowButton;
+        }
         backButton.setContentDescription(required ? "退出地图设置" : "返回首页");
         backButton.setOnClickListener(view -> finishSettings());
-        header.addView(backButton, new LinearLayout.LayoutParams(dp(required ? 58 : 48), dp(44)));
+        header.addView(backButton, new LinearLayout.LayoutParams(dp(required ? 58 : 44), dp(required ? 44 : 42)));
 
         TextView title = label("地图设置", 21, COLOR_TEXT, Typeface.BOLD);
         title.setGravity(Gravity.CENTER);
@@ -335,6 +350,13 @@ public final class MapSettingsActivity extends Activity {
                     if (updateStatus != null) updateStatus.setText("暂未获取到更新，请检查网络");
                     return;
                 }
+                if (update.minimumVersionCode > BuildConfig.VERSION_CODE) {
+                    if (updateStatus != null) {
+                        updateStatus.setText("当前版本已停止支持，必须更新后才能继续使用");
+                    }
+                    showMandatoryUpdateDialog(update);
+                    return;
+                }
                 if (update.versionCode <= BuildConfig.VERSION_CODE) {
                     if (updateStatus != null) updateStatus.setText("当前已是最新版本");
                     return;
@@ -343,6 +365,28 @@ public final class MapSettingsActivity extends Activity {
                 showUpdateDialog(update);
             });
         });
+    }
+
+    private void showMandatoryUpdateDialog(UpdateInfo update) {
+        String message = "当前版本（versionCode " + BuildConfig.VERSION_CODE
+                + "）已停止支持。请更新到 " + update.versionName
+                + "（versionCode " + update.versionCode + "）后继续使用。"
+                + (update.releaseNotes.isEmpty() ? "" : "\n\n更新内容：\n" + update.releaseNotes);
+        AlertDialog dialog = new AlertDialog.Builder(this)
+                .setTitle("必须更新")
+                .setMessage(message)
+                .setPositiveButton(update.downloadUrl.isEmpty() ? "重试" : "打开下载页", null)
+                .setCancelable(false)
+                .create();
+        dialog.setOnShowListener(ignored -> dialog.getButton(AlertDialog.BUTTON_POSITIVE)
+                .setOnClickListener(view -> {
+                    if (update.downloadUrl.isEmpty()) {
+                        Toast.makeText(this, "更新清单未配置下载地址", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    openWebPage(update.downloadUrl);
+                }));
+        dialog.show();
     }
 
     private UpdateInfo fetchUpdateInfo() {
@@ -366,11 +410,13 @@ public final class MapSettingsActivity extends Activity {
                 }
                 JSONObject json = new JSONObject(body.toString());
                 int code = json.optInt("versionCode", -1);
+                int minimumVersionCode = json.optInt("minimumVersionCode",
+                        json.optInt("minVersionCode", 0));
                 String name = json.optString("versionName", "").trim();
                 String downloadUrl = json.optString("downloadUrl", "").trim();
                 String notes = json.optString("releaseNotes", "").trim();
                 return code >= 0 && !name.isEmpty()
-                        ? new UpdateInfo(code, name, downloadUrl, notes) : null;
+                        ? new UpdateInfo(code, minimumVersionCode, name, downloadUrl, notes) : null;
             }
         } catch (Exception ignored) {
             return null;
@@ -517,12 +563,15 @@ public final class MapSettingsActivity extends Activity {
 
     private static final class UpdateInfo {
         final int versionCode;
+        final int minimumVersionCode;
         final String versionName;
         final String downloadUrl;
         final String releaseNotes;
 
-        UpdateInfo(int versionCode, String versionName, String downloadUrl, String releaseNotes) {
+        UpdateInfo(int versionCode, int minimumVersionCode, String versionName,
+                   String downloadUrl, String releaseNotes) {
             this.versionCode = versionCode;
+            this.minimumVersionCode = minimumVersionCode;
             this.versionName = versionName;
             this.downloadUrl = downloadUrl;
             this.releaseNotes = releaseNotes;
