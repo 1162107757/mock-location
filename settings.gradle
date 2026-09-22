@@ -15,4 +15,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "DriftLocation"
-include(":app", ":xposed-stubs")
+include(":app", ":xposed-stubs", ":license-issuer")

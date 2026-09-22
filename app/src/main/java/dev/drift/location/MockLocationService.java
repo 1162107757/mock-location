@@ -50,6 +50,7 @@ public final class MockLocationService extends Service {
     private double trajectoryTotalMeters;
     private double trajectoryTravelledMeters;
     private long lastTrajectoryTickMs;
+    private long nextLicenseCheckMs;
     private final ArrayList<RoutePoint> trajectoryPoints = new ArrayList<>();
 
     private final Runnable locationTicker = new Runnable() {
@@ -57,6 +58,15 @@ public final class MockLocationService extends Service {
         public void run() {
             if (!running) return;
             try {
+                long nowMs = SystemClock.elapsedRealtime();
+                if (nowMs >= nextLicenseCheckMs) {
+                    nextLicenseCheckMs = nowMs + 30_000L;
+                    LicenseManager.Access access = LicenseManager.getAccess(MockLocationService.this);
+                    if (!access.allowed) {
+                        stopMocking(access.message);
+                        return;
+                    }
+                }
                 boolean trajectoryCompleted = false;
                 if (trajectoryMode && !trajectoryPaused) {
                     trajectoryCompleted = advanceTrajectory();
@@ -96,6 +106,12 @@ public final class MockLocationService extends Service {
         String action = intent == null ? LocationContract.ACTION_START : intent.getAction();
         if (LocationContract.ACTION_STOP.equals(action)) {
             stopMocking("模拟已停止");
+            return START_NOT_STICKY;
+        }
+
+        LicenseManager.Access access = LicenseManager.getAccess(this);
+        if (!access.allowed) {
+            stopMocking(access.message);
             return START_NOT_STICKY;
         }
 
@@ -150,6 +166,7 @@ public final class MockLocationService extends Service {
                 installProvider(LocationManager.NETWORK_PROVIDER, true, false);
                 installOptionalProvider(FUSED_PROVIDER, true, true);
                 running = true;
+                nextLicenseCheckMs = SystemClock.elapsedRealtime() + 30_000L;
                 preferences.edit().putBoolean(LocationContract.KEY_RUNNING, true).apply();
                 if (rootOnly) broadcastRootState(true);
                 handler.removeCallbacks(locationTicker);

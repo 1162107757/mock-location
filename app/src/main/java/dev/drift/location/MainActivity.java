@@ -66,21 +66,22 @@ public final class MainActivity extends Activity {
     private static final int REQUEST_CURRENT_LOCATION = 43;
     private static final int REQUEST_MAP_SETTINGS = 44;
     private static final long LOCATION_TIMEOUT_MS = 12_000L;
-    private static final int COLOR_BACKGROUND = Color.rgb(239, 238, 227);
-    private static final int COLOR_CARD = Color.rgb(255, 253, 245);
-    private static final int COLOR_MUTED = Color.rgb(250, 245, 226);
-    private static final int COLOR_BORDER = Color.rgb(7, 7, 6);
-    private static final int COLOR_TEXT = Color.rgb(7, 7, 6);
-    private static final int COLOR_SUBTLE = Color.rgb(76, 92, 94);
-    private static final int COLOR_ACCENT = Color.rgb(250, 175, 20);
-    private static final int COLOR_BLUE = Color.rgb(47, 152, 232);
-    private static final int COLOR_TEAL = Color.rgb(65, 121, 140);
-    private static final int COLOR_DANGER = Color.rgb(232, 74, 38);
-    private static final int COLOR_DIALOG_SURFACE = Color.rgb(255, 253, 245);
-    private static final int COLOR_DIALOG_BUTTON = Color.rgb(250, 245, 226);
-    private static final int COLOR_DIALOG_BORDER = Color.rgb(7, 7, 6);
-    private static final int COLOR_DIALOG_TEXT = Color.rgb(7, 7, 6);
-    private static final int COLOR_DIALOG_SUBTLE = Color.rgb(76, 92, 94);
+    // Shared visual language: quiet surfaces, light borders and one clear primary action.
+    private static final int COLOR_BACKGROUND = Color.rgb(246, 241, 231);
+    private static final int COLOR_CARD = Color.rgb(255, 255, 255);
+    private static final int COLOR_MUTED = Color.rgb(240, 243, 241);
+    private static final int COLOR_BORDER = Color.rgb(213, 220, 216);
+    private static final int COLOR_TEXT = Color.rgb(30, 27, 25);
+    private static final int COLOR_SUBTLE = Color.rgb(104, 108, 106);
+    private static final int COLOR_ACCENT = Color.rgb(246, 168, 23);
+    private static final int COLOR_BLUE = Color.rgb(126, 177, 218);
+    private static final int COLOR_TEAL = Color.rgb(42, 126, 136);
+    private static final int COLOR_DANGER = Color.rgb(211, 83, 70);
+    private static final int COLOR_DIALOG_SURFACE = Color.rgb(255, 255, 255);
+    private static final int COLOR_DIALOG_BUTTON = Color.rgb(240, 243, 241);
+    private static final int COLOR_DIALOG_BORDER = Color.rgb(213, 220, 216);
+    private static final int COLOR_DIALOG_TEXT = Color.rgb(30, 27, 25);
+    private static final int COLOR_DIALOG_SUBTLE = Color.rgb(104, 108, 106);
     private static final int MAP_UPDATE_DELAY_SECONDS = 3;
     private static final long MAP_UPDATE_DELAY_MS = MAP_UPDATE_DELAY_SECONDS * 1_000L;
     private static final String MAP_PREFERENCES = "amap_configuration";
@@ -518,6 +519,8 @@ public final class MainActivity extends Activity {
 
     private Button createSettingsUtilityButton(String text, String description) {
         Button button = new Button(this);
+        button.setElevation(0f);
+        button.setStateListAnimator(null);
         button.setText(text);
         button.setTextSize(13);
         button.setTextColor(COLOR_DIALOG_TEXT);
@@ -552,6 +555,8 @@ public final class MainActivity extends Activity {
 
     private void styleDialogButton(Button button, int textColor, GradientDrawable background) {
         if (button == null) return;
+        button.setElevation(0f);
+        button.setStateListAnimator(null);
         button.setAllCaps(false);
         button.setTextSize(14);
         button.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
@@ -898,7 +903,11 @@ public final class MainActivity extends Activity {
             }
             if (!matchesSelectedPlace(latitude, longitude)) selectedPlaceName = "";
             coordinateText.setText(formatCoordinate(latitude, longitude));
-            if (centerChanged) scheduleMapLocationUpdate(latitude, longitude);
+            if (centerChanged && LicenseManager.hasAccess(this)) {
+                scheduleMapLocationUpdate(latitude, longitude);
+            } else if (centerChanged) {
+                cancelPendingMapLocationUpdate();
+            }
         });
         mapView.setOnSearchResultListener(new AmapWebMapView.OnSearchResultListener() {
             @Override
@@ -938,13 +947,17 @@ public final class MainActivity extends Activity {
         LinearLayout zoomControls = new LinearLayout(this);
         zoomControls.setOrientation(LinearLayout.VERTICAL);
         zoomControls.setPadding(dp(4), dp(4), dp(4), dp(4));
-        zoomControls.setBackground(rounded(COLOR_CARD, 16, COLOR_BORDER, 2));
+        zoomControls.setBackground(rounded(COLOR_CARD, 16, COLOR_BORDER, 1));
         Button zoomIn = createCompactButton("+", "放大地图");
         Button zoomOut = createCompactButton("−", "缩小地图");
         locateButton = createCompactButton("◎", "定位到设备当前位置");
         locateButton.setTextSize(21);
-        zoomIn.setOnClickListener(view -> mapView.zoomIn());
-        zoomOut.setOnClickListener(view -> mapView.zoomOut());
+        zoomIn.setOnClickListener(view -> {
+            if (requireAccess()) mapView.zoomIn();
+        });
+        zoomOut.setOnClickListener(view -> {
+            if (requireAccess()) mapView.zoomOut();
+        });
         locateButton.setOnClickListener(view -> beginLocateFlow());
         zoomControls.addView(zoomIn, new LinearLayout.LayoutParams(dp(44), dp(44)));
         zoomControls.addView(zoomOut, new LinearLayout.LayoutParams(dp(44), dp(44)));
@@ -985,7 +998,7 @@ public final class MainActivity extends Activity {
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
         bar.setPadding(dp(14), dp(6), dp(6), dp(6));
-        bar.setBackground(rounded(COLOR_CARD, 20, COLOR_BORDER, 2));
+        bar.setBackground(rounded(COLOR_CARD, 20, COLOR_BORDER, 1));
         bar.setElevation(dp(5));
 
         searchInput = new EditText(this);
@@ -1018,7 +1031,7 @@ public final class MainActivity extends Activity {
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(dp(18), dp(10), dp(18), dp(16));
-        panel.setBackground(rounded(COLOR_CARD, 24, COLOR_BORDER, 2));
+        panel.setBackground(rounded(COLOR_CARD, 24, COLOR_BORDER, 1));
         panel.setElevation(dp(8));
 
         View handle = new View(this);
@@ -1038,7 +1051,9 @@ public final class MainActivity extends Activity {
         coordinateText = label("", 17, COLOR_TEXT, Typeface.BOLD);
         coordinateText.setContentDescription("当前选中的经纬度，点击可手动输入");
         coordinateText.setPadding(0, dp(2), 0, dp(2));
-        coordinateText.setOnClickListener(view -> showCoordinateDialog());
+        coordinateText.setOnClickListener(view -> {
+            if (requireAccess()) showCoordinateDialog();
+        });
         locationLabels.addView(locationCaption);
         locationLabels.addView(coordinateText);
         locationRow.addView(locationLabels, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -1046,31 +1061,30 @@ public final class MainActivity extends Activity {
         statusText = label("", 13, COLOR_SUBTLE, Typeface.BOLD);
         statusText.setGravity(Gravity.CENTER);
         statusText.setPadding(dp(12), dp(8), dp(12), dp(8));
+        statusText.setBackground(rounded(Color.rgb(225, 242, 239), 12, Color.TRANSPARENT, 0));
         statusText.setContentDescription("查看定位诊断");
-        statusText.setOnClickListener(view -> showLocationDiagnostics());
+        statusText.setOnClickListener(view -> {
+            if (requireAccess()) showLocationDiagnostics();
+        });
         locationRow.addView(statusText);
         panel.addView(locationRow);
 
         LinearLayout utilityRow = new LinearLayout(this);
         utilityRow.setOrientation(LinearLayout.HORIZONTAL);
         Button historyButton = createCompactButton("历史位置", "查看模拟过的位置");
-        historyButton.setBackground(rounded(Color.rgb(255, 250, 230), 13, COLOR_BORDER, 2));
-        historyButton.setOnClickListener(view -> showHistoryDialog());
+        historyButton.setBackground(rounded(Color.rgb(255, 249, 229), 13, COLOR_BORDER, 1));
+        historyButton.setOnClickListener(view -> {
+            if (requireAccess()) showHistoryDialog();
+        });
         utilityRow.addView(historyButton, new LinearLayout.LayoutParams(0, dp(42), 1f));
         Button trajectoryButton = createCompactButton("轨迹模拟", "打开轨迹模拟功能");
-        trajectoryButton.setBackground(rounded(Color.rgb(232, 243, 255), 13, COLOR_BORDER, 2));
-        trajectoryButton.setOnClickListener(view -> {
-            try {
-                startActivity(new Intent(this, TrajectoryActivity.class));
-            } catch (RuntimeException exception) {
-                Toast.makeText(this, "无法打开轨迹模拟", Toast.LENGTH_SHORT).show();
-            }
-        });
+        trajectoryButton.setBackground(rounded(Color.rgb(231, 242, 249), 13, COLOR_BORDER, 1));
+        trajectoryButton.setOnClickListener(view -> openTrajectory());
         LinearLayout.LayoutParams trajectoryParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
         trajectoryParams.leftMargin = dp(8);
         utilityRow.addView(trajectoryButton, trajectoryParams);
         Button mapSettingsButton = createCompactButton("地图设置", "配置高德地图 Key");
-        mapSettingsButton.setBackground(rounded(Color.rgb(255, 238, 231), 13, COLOR_BORDER, 2));
+        mapSettingsButton.setBackground(rounded(Color.rgb(252, 235, 228), 13, COLOR_BORDER, 1));
         mapSettingsButton.setOnClickListener(view -> openMapSettings(false));
         LinearLayout.LayoutParams mapSettingsParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
         mapSettingsParams.leftMargin = dp(8);
@@ -1084,7 +1098,9 @@ public final class MainActivity extends Activity {
         actionRow.setOrientation(LinearLayout.HORIZONTAL);
         actionRow.setPadding(0, dp(12), 0, 0);
         setupButton = createActionButton("Root 模式", COLOR_TEAL, Color.WHITE);
-        setupButton.setOnClickListener(view -> showSetupOptions());
+        setupButton.setOnClickListener(view -> {
+            if (requireAccess()) showSetupOptions();
+        });
         LinearLayout.LayoutParams setupParams = new LinearLayout.LayoutParams(0, dp(52), 0.9f);
         setupParams.rightMargin = dp(10);
         actionRow.addView(setupButton, setupParams);
@@ -1103,7 +1119,30 @@ public final class MainActivity extends Activity {
         return panel;
     }
 
+    private void openTrajectory() {
+        try {
+            if (LicenseManager.isTrajectoryUnlocked(this)) {
+                startActivity(new Intent(this, TrajectoryActivity.class));
+                return;
+            }
+            Intent intent = new Intent(this, LicenseActivity.class);
+            intent.putExtra(LicenseActivity.EXTRA_OPEN_TRAJECTORY, true);
+            startActivity(intent);
+        } catch (RuntimeException exception) {
+            Toast.makeText(this, "无法打开轨迹模拟", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private boolean requireAccess() {
+        LicenseManager.Access access = LicenseManager.getAccess(this);
+        if (access.allowed) return true;
+        startActivity(new Intent(this, LicenseActivity.class));
+        Toast.makeText(this, access.message + "，请先激活卡密", Toast.LENGTH_LONG).show();
+        return false;
+    }
+
     private void beginStartFlow() {
+        if (!requireAccess()) return;
         if (rootGranted && !rootOnly) {
             rootOnly = true;
             preferences.edit().putBoolean(LocationContract.KEY_ROOT_ONLY, true).apply();
@@ -1302,6 +1341,7 @@ public final class MainActivity extends Activity {
 
     private void beginLocateFlow() {
         try {
+            if (!requireAccess()) return;
             if (running) {
                 Toast.makeText(this, "当前位置正在被模拟；停止模拟后可获取真实位置", Toast.LENGTH_LONG).show();
                 return;
@@ -1579,12 +1619,12 @@ public final class MainActivity extends Activity {
         preferences.edit().putBoolean(LocationContract.KEY_RUNNING, running).apply();
         statusText.setText(running ? "● 运行中" : "● 未运行");
         statusText.setTextColor(running ? COLOR_BLUE : COLOR_SUBTLE);
-        statusText.setBackground(rounded(running ? Color.rgb(232, 244, 255) : COLOR_MUTED,
-                14, running ? COLOR_BLUE : COLOR_BORDER, 2));
+        statusText.setBackground(rounded(running ? Color.rgb(231, 242, 249) : COLOR_MUTED,
+                14, Color.TRANSPARENT, 0));
         startButton.setText(running ? "停止模拟" : "开始模拟");
         startButton.setTextColor(running ? Color.WHITE : COLOR_TEXT);
-        startButton.setBackground(rounded(running ? COLOR_DANGER : COLOR_ACCENT, 15,
-                COLOR_BORDER, 2));
+        startButton.setBackground(rounded(running ? COLOR_DANGER : COLOR_ACCENT, 16,
+                Color.TRANSPARENT, 0));
         String setupLabel;
         if (rootOnly && rootGranted) {
             setupLabel = "Root 模式已配置";
@@ -1665,6 +1705,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showHistoryDialog() {
+        if (!requireAccess()) return;
         List<LocationHistoryStore.Entry> entries = historyStore.getEntries();
         if (entries.isEmpty()) {
             Toast.makeText(this, "还没有模拟过的位置", Toast.LENGTH_SHORT).show();
@@ -1786,6 +1827,7 @@ public final class MainActivity extends Activity {
     }
 
     private void searchLocation() {
+        if (!requireAccess()) return;
         String query = searchInput.getText().toString().trim();
         if (query.isEmpty()) {
             searchInput.setError("请输入地点");
@@ -1818,6 +1860,7 @@ public final class MainActivity extends Activity {
     }
 
     private void showCoordinateDialog() {
+        if (!requireAccess()) return;
         LinearLayout fields = new LinearLayout(this);
         fields.setOrientation(LinearLayout.VERTICAL);
         fields.setPadding(dp(24), dp(8), dp(24), 0);
@@ -1903,6 +1946,8 @@ public final class MainActivity extends Activity {
 
     private Button createActionButton(String text, int background, int foreground) {
         Button button = new Button(this);
+        button.setElevation(0f);
+        button.setStateListAnimator(null);
         button.setText(text);
         button.setTextColor(foreground);
         button.setTextSize(14);
@@ -1911,14 +1956,17 @@ public final class MainActivity extends Activity {
         button.setMinHeight(dp(44));
         button.setMinWidth(dp(44));
         button.setPadding(dp(12), 0, dp(12), 0);
-        button.setBackground(rounded(background, 15, COLOR_BORDER, 2));
+        boolean primary = background == COLOR_ACCENT || background == COLOR_TEAL || background == COLOR_DANGER;
+        button.setBackground(rounded(background, primary ? 16 : 13,
+                primary ? Color.TRANSPARENT : COLOR_BORDER, primary ? 0 : 1));
         return button;
     }
 
     private Button createCompactButton(String text, String description) {
-        Button button = createActionButton(text, COLOR_MUTED, COLOR_TEXT);
+        // Secondary actions stay white so they read as actions, while inputs use tinted fields.
+        Button button = createActionButton(text, COLOR_CARD, COLOR_TEXT);
         button.setContentDescription(description);
-        button.setBackground(rounded(COLOR_MUTED, 12, COLOR_BORDER, 2));
+        button.setBackground(rounded(COLOR_CARD, 12, COLOR_BORDER, 1));
         button.setPadding(dp(4), 0, dp(4), 0);
         return button;
     }

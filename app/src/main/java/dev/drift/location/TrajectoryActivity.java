@@ -49,16 +49,16 @@ import java.util.concurrent.Executors;
 /** Independent route editor and playback screen. The existing home screen remains fixed-location only. */
 public final class TrajectoryActivity extends Activity {
     private static final int REQUEST_PERMISSIONS = 71;
-    private static final int COLOR_BACKGROUND = Color.rgb(239, 238, 227);
-    private static final int COLOR_CARD = Color.rgb(255, 253, 245);
-    private static final int COLOR_MUTED = Color.rgb(250, 245, 226);
-    private static final int COLOR_BORDER = Color.rgb(7, 7, 6);
-    private static final int COLOR_TEXT = Color.rgb(7, 7, 6);
-    private static final int COLOR_SUBTLE = Color.rgb(76, 92, 94);
-    private static final int COLOR_ACCENT = Color.rgb(250, 175, 20);
-    private static final int COLOR_BLUE = Color.rgb(47, 152, 232);
-    private static final int COLOR_TEAL = Color.rgb(65, 121, 140);
-    private static final int COLOR_DANGER = Color.rgb(232, 74, 38);
+    private static final int COLOR_BACKGROUND = Color.rgb(246, 241, 231);
+    private static final int COLOR_CARD = Color.rgb(255, 255, 255);
+    private static final int COLOR_MUTED = Color.rgb(240, 243, 241);
+    private static final int COLOR_BORDER = Color.rgb(213, 220, 216);
+    private static final int COLOR_TEXT = Color.rgb(30, 27, 25);
+    private static final int COLOR_SUBTLE = Color.rgb(104, 108, 106);
+    private static final int COLOR_ACCENT = Color.rgb(246, 168, 23);
+    private static final int COLOR_BLUE = Color.rgb(126, 177, 218);
+    private static final int COLOR_TEAL = Color.rgb(42, 126, 136);
+    private static final int COLOR_DANGER = Color.rgb(211, 83, 70);
     private static final String FAVORITE_ROUTES_PREFS = "trajectory_favorites";
     private static final String KEY_FAVORITE_ROUTES = "routes_json";
     private static final int MAX_FAVORITE_ROUTES = 30;
@@ -204,6 +204,11 @@ public final class TrajectoryActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (!LicenseManager.isTrajectoryUnlocked(this)) {
+            startActivity(new Intent(this, LicenseActivity.class));
+            finish();
+            return;
+        }
         getWindow().setStatusBarColor(COLOR_BACKGROUND);
         getWindow().setNavigationBarColor(COLOR_BACKGROUND);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -406,7 +411,9 @@ public final class TrajectoryActivity extends Activity {
         segmentTools = new LinearLayout(this);
         segmentTools.setOrientation(LinearLayout.HORIZONTAL);
         fitRouteButton = compactButton("查看全线", "将地图缩放到完整线路");
-        fitRouteButton.setOnClickListener(view -> mapView.fitRoute());
+        fitRouteButton.setOnClickListener(view -> {
+            if (requireAccess()) mapView.fitRoute();
+        });
         segmentTools.addView(fitRouteButton, new LinearLayout.LayoutParams(0, dp(38), 1f));
         undoSegmentButton = compactButton("撤销上一段", "撤销最近绘制的线路段");
         undoSegmentButton.setOnClickListener(view -> undoLastSegment());
@@ -490,6 +497,7 @@ public final class TrajectoryActivity extends Activity {
         optionRow.addView(optionHint, new LinearLayout.LayoutParams(0, dp(38), 1f));
         loopButton = compactButton("循环：关", "切换循环播放");
         loopButton.setOnClickListener(view -> {
+            if (!requireAccess()) return;
             loop = !loop;
             loopButton.setText(loop ? "循环：开" : "循环：关");
             refreshPanelSections();
@@ -627,7 +635,7 @@ public final class TrajectoryActivity extends Activity {
         LinearLayout toolbar = new LinearLayout(this);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
         toolbar.setPadding(dp(8), dp(4), dp(8), dp(4));
-        toolbar.setBackground(rounded(COLOR_CARD, 18, COLOR_BORDER, 2));
+        toolbar.setBackground(rounded(COLOR_CARD, 18, COLOR_BORDER, 1));
         ImageButton back = centeredBackButton("返回" + titleText);
         back.setOnClickListener(backListener);
         toolbar.addView(back, new LinearLayout.LayoutParams(dp(44), dp(42)));
@@ -643,7 +651,7 @@ public final class TrajectoryActivity extends Activity {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(18), dp(13), dp(18), dp(16));
-        card.setBackground(rounded(COLOR_CARD, 24, COLOR_BORDER, 2));
+        card.setBackground(rounded(COLOR_CARD, 24, COLOR_BORDER, 0));
         card.setElevation(dp(8));
         return card;
     }
@@ -908,6 +916,7 @@ public final class TrajectoryActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
         redesignedLoopButton = redesignedSecondaryButton("循环播放：关", "切换循环播放");
         redesignedLoopButton.setOnClickListener(view -> {
+            if (!requireAccess()) return;
             loop = !loop;
             refreshRedesignedPages();
         });
@@ -1041,6 +1050,7 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private void startRedesignedDrawing() {
+        if (!requireFeature(LicenseManager.FEATURE_TRAJECTORY, "轨迹模拟")) return;
         if (running) {
             Toast.makeText(this, "轨迹运行中，请先停止后再编辑", Toast.LENGTH_SHORT).show();
             return;
@@ -1056,6 +1066,8 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private void goToRedesignedPage(int page) {
+        if (page == PAGE_FAVORITES
+                && !requireFeature(LicenseManager.FEATURE_FAVORITE, "线路收藏")) return;
         redesignedPage = page;
         if (redesignedEditorPage == null) return;
         // Keep the WebView measured at full size while pages cover it. AMap can
@@ -1079,6 +1091,7 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private void showEditorMoreDialog() {
+        if (!requireAccess()) return;
         String[] actions = {"查看全线", "清空当前线路", "打开我的收藏"};
         new AlertDialog.Builder(this)
                 .setTitle("更多路线工具")
@@ -1095,6 +1108,7 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private void confirmDeleteFavoriteInline(FavoriteRoute favorite) {
+        if (!requireAccess()) return;
         new AlertDialog.Builder(this)
                 .setTitle("删除收藏")
                 .setMessage("确定删除“" + favorite.name + "”？")
@@ -1194,7 +1208,7 @@ public final class TrajectoryActivity extends Activity {
             boolean active = tag instanceof Float && ((Float) tag) >= 0f
                     && Math.abs(((Float) tag) - speedKmh) < 0.01f;
             button.setBackground(rounded(active ? COLOR_ACCENT : COLOR_MUTED, 12,
-                    COLOR_BORDER, 2));
+                    active ? Color.TRANSPARENT : COLOR_BORDER, active ? 0 : 1));
         }
         if (redesignedDrawStatus != null) {
             redesignedDrawStatus.setText(drawingPicking
@@ -1366,17 +1380,18 @@ public final class TrajectoryActivity extends Activity {
             boolean active = button == selected;
             button.setTextColor(COLOR_TEXT);
             button.setBackground(rounded(active ? COLOR_ACCENT : COLOR_MUTED, 12,
-                    COLOR_BORDER, 2));
+                    active ? Color.TRANSPARENT : COLOR_BORDER, active ? 0 : 1));
         }
         if (customSpeedButton != null) {
             boolean active = customSpeedButton == selected;
             customSpeedButton.setTextColor(COLOR_TEXT);
             customSpeedButton.setBackground(rounded(active ? COLOR_ACCENT : COLOR_MUTED, 12,
-                    COLOR_BORDER, 2));
+                    active ? Color.TRANSPARENT : COLOR_BORDER, active ? 0 : 1));
         }
     }
 
     private void onMapTap(double latitude, double longitude) {
+        if (!LicenseManager.isTrajectoryUnlocked(this)) return;
         if (redesignedPage != PAGE_EDITOR) return;
         if (running || drawingMode || drawingPicking) {
             if (running) {
@@ -1435,6 +1450,7 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private void toggleDrawingMode() {
+        if (!requireAccess()) return;
         if (running) {
             Toast.makeText(this, "轨迹运行中，请先停止后再编辑", Toast.LENGTH_SHORT).show();
             return;
@@ -1489,6 +1505,10 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private void onDrawPath(List<AmapWebMapView.RoutePoint> points) {
+        if (!LicenseManager.isTrajectoryUnlocked(this)) {
+            disableDrawingMode();
+            return;
+        }
         if (running) return;
         if (points == null || points.size() < 2) {
             Toast.makeText(this, "自绘线路至少需要两个点", Toast.LENGTH_SHORT).show();
@@ -1539,6 +1559,7 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private void undoLastSegment() {
+        if (!requireAccess()) return;
         if (running || drawingMode || drawingPicking) return;
         if (drawnSegments.isEmpty()) {
             Toast.makeText(this, "暂无线段可以撤销", Toast.LENGTH_SHORT).show();
@@ -1568,6 +1589,7 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private void clearRoute() {
+        if (!requireAccess()) return;
         if (running) {
             Toast.makeText(this, "请先停止轨迹", Toast.LENGTH_SHORT).show();
             return;
@@ -1583,6 +1605,7 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private void showRoutePlannerDialog() {
+        if (!requireFeature(LicenseManager.FEATURE_ROUTE, "导航线路")) return;
         if (running || drawingMode || drawingPicking || planningRoute) return;
         if (routePoints.size() < 2) {
             Toast.makeText(this, "请先设置起点和终点", Toast.LENGTH_SHORT).show();
@@ -1607,6 +1630,7 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private void requestRoutePlan(String mode) {
+        if (!requireFeature(LicenseManager.FEATURE_ROUTE, "导航线路")) return;
         if (routePoints.size() < 2) return;
         clearRoutePlanTimeout();
         planningRoute = true;
@@ -1669,6 +1693,7 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private void saveCurrentRouteAsFavorite() {
+        if (!requireFeature(LicenseManager.FEATURE_FAVORITE, "线路收藏")) return;
         if (running || drawingMode || drawingPicking) {
             Toast.makeText(this, "请先结束自绘并停止轨迹", Toast.LENGTH_SHORT).show();
             return;
@@ -1804,6 +1829,7 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private void showFavoriteRoutesDialog() {
+        if (!requireFeature(LicenseManager.FEATURE_FAVORITE, "线路收藏")) return;
         if (favoriteRoutes.isEmpty()) {
             new AlertDialog.Builder(this)
                     .setTitle("我的收藏")
@@ -1856,6 +1882,7 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private void confirmDeleteFavorite(AlertDialog listDialog, FavoriteRoute favorite) {
+        if (!requireFeature(LicenseManager.FEATURE_FAVORITE, "线路收藏")) return;
         new AlertDialog.Builder(this)
                 .setTitle("删除收藏")
                 .setMessage("确定删除“" + favorite.name + "”？")
@@ -1871,6 +1898,7 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private void loadFavoriteRoute(FavoriteRoute favorite) {
+        if (!requireFeature(LicenseManager.FEATURE_FAVORITE, "线路收藏")) return;
         if (running) {
             Toast.makeText(this, "请先停止轨迹", Toast.LENGTH_SHORT).show();
             return;
@@ -1914,6 +1942,7 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private void startTrajectory() {
+        if (!requireAccess()) return;
         if (routePoints.size() < 2) {
             Toast.makeText(this, "请先在地图上设置终点", Toast.LENGTH_SHORT).show();
             return;
@@ -1963,6 +1992,28 @@ public final class TrajectoryActivity extends Activity {
         goToRedesignedPage(PAGE_RUNNING);
     }
 
+    private boolean requireAccess() {
+        LicenseManager.Access access = LicenseManager.getAccess(this);
+        if (access.allowed) return true;
+        startActivity(new Intent(this, LicenseActivity.class));
+        Toast.makeText(this, access.message + "，请先激活卡密", Toast.LENGTH_LONG).show();
+        return false;
+    }
+
+    private boolean requireFeature(String feature, String featureLabel) {
+        LicenseManager.Access access = LicenseManager.getAccess(this);
+        if (!access.allowed) {
+            startActivity(new Intent(this, LicenseActivity.class));
+            Toast.makeText(this, access.message + "，请先激活卡密", Toast.LENGTH_LONG).show();
+            return false;
+        }
+        if (access.license != null && access.license.hasFeature(feature)) {
+            return true;
+        }
+        Toast.makeText(this, "当前卡密未包含“" + featureLabel + "”功能", Toast.LENGTH_LONG).show();
+        return false;
+    }
+
     private void configureRootAppOp() {
         if (rootSetupInFlight) return;
         rootSetupInFlight = true;
@@ -2003,6 +2054,7 @@ public final class TrajectoryActivity extends Activity {
 
     private void togglePause() {
         if (!running) return;
+        if (!requireAccess()) return;
         sendTrajectoryAction(paused ? LocationContract.ACTION_TRAJECTORY_RESUME
                 : LocationContract.ACTION_TRAJECTORY_PAUSE);
     }
@@ -2060,6 +2112,7 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private void showSpeedDialog() {
+        if (!requireAccess()) return;
         EditText field = new EditText(this);
         field.setSingleLine(true);
         field.setInputType(InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL);
@@ -2205,26 +2258,32 @@ public final class TrajectoryActivity extends Activity {
     }
 
     private Button compactButton(String text, String description) {
-        Button button = createActionButton(text, COLOR_MUTED, COLOR_TEXT);
+        Button button = createActionButton(text, COLOR_CARD, COLOR_TEXT);
+        button.setElevation(0f);
+        button.setStateListAnimator(null);
         button.setContentDescription(description);
         button.setTextSize(13);
-        button.setBackground(rounded(COLOR_MUTED, 12, COLOR_BORDER, 2));
+        button.setBackground(rounded(COLOR_CARD, 12, COLOR_BORDER, 1));
         button.setPadding(dp(4), 0, dp(4), 0);
         return button;
     }
 
     private ImageButton centeredBackButton(String description) {
         ImageButton button = new ImageButton(this);
+        button.setElevation(0f);
+        button.setStateListAnimator(null);
         button.setImageResource(R.drawable.ic_back_chevron);
         button.setScaleType(ImageView.ScaleType.CENTER);
         button.setContentDescription(description);
         button.setPadding(0, 0, 0, 0);
-        button.setBackground(rounded(COLOR_MUTED, 12, COLOR_BORDER, 2));
+        button.setBackground(rounded(COLOR_CARD, 12, COLOR_BORDER, 1));
         return button;
     }
 
     private Button createActionButton(String text, int background, int foreground) {
         Button button = new Button(this);
+        button.setElevation(0f);
+        button.setStateListAnimator(null);
         button.setText(text);
         button.setTextColor(foreground);
         button.setTextSize(14);

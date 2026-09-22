@@ -10,3 +10,7 @@ app/build/
 build-artifacts/
 *.apk
 *.aab
+
+# Offline license issuer secrets and compiled helper classes
+tools/license/license-keys/
+tools/license/*.class

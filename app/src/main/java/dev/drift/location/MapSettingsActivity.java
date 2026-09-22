@@ -38,16 +38,16 @@ import java.util.concurrent.Executors;
 
 /** Full-page map provider settings. Keeps secrets masked and stores them in Android Keystore. */
 public final class MapSettingsActivity extends Activity {
-    private static final int COLOR_BACKGROUND = Color.rgb(239, 238, 227);
-    private static final int COLOR_CARD = Color.rgb(255, 253, 245);
-    private static final int COLOR_INPUT = Color.rgb(250, 245, 226);
-    private static final int COLOR_BORDER = Color.rgb(7, 7, 6);
-    private static final int COLOR_TEXT = Color.rgb(7, 7, 6);
-    private static final int COLOR_SUBTLE = Color.rgb(76, 92, 94);
-    private static final int COLOR_ACCENT = Color.rgb(250, 175, 20);
-    private static final int COLOR_BLUE = Color.rgb(47, 152, 232);
-    private static final int COLOR_ORANGE = Color.rgb(232, 74, 38);
-    private static final int COLOR_TEAL = Color.rgb(65, 121, 140);
+    private static final int COLOR_BACKGROUND = Color.rgb(246, 241, 231);
+    private static final int COLOR_CARD = Color.rgb(255, 255, 255);
+    private static final int COLOR_INPUT = Color.rgb(244, 247, 245);
+    private static final int COLOR_BORDER = Color.rgb(213, 220, 216);
+    private static final int COLOR_TEXT = Color.rgb(30, 27, 25);
+    private static final int COLOR_SUBTLE = Color.rgb(104, 108, 106);
+    private static final int COLOR_ACCENT = Color.rgb(246, 168, 23);
+    private static final int COLOR_BLUE = Color.rgb(126, 177, 218);
+    private static final int COLOR_ORANGE = Color.rgb(211, 83, 70);
+    private static final int COLOR_TEAL = Color.rgb(42, 126, 136);
     private static final String UPDATE_MANIFEST_URL =
             "https://raw.githubusercontent.com/1162107757/mock-location/main/update.json";
     private static final int UPDATE_TIMEOUT_MS = 8_000;
@@ -58,6 +58,7 @@ public final class MapSettingsActivity extends Activity {
     private EditText keyField;
     private EditText securityCodeField;
     private TextView updateStatus;
+    private TextView licenseStatus;
     private boolean required;
 
     @Override
@@ -85,20 +86,22 @@ public final class MapSettingsActivity extends Activity {
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setPadding(dp(6), dp(4), dp(14), dp(4));
-        header.setBackground(rounded(COLOR_CARD, 18, COLOR_BORDER, 2));
+        header.setBackground(rounded(COLOR_CARD, 18, COLOR_BORDER, 1));
 
         View backButton;
         if (required) {
             Button exitButton = actionButton("退出", COLOR_INPUT, COLOR_TEXT, 13);
             exitButton.setPadding(dp(4), 0, dp(4), 0);
-            exitButton.setBackground(rounded(COLOR_INPUT, 12, COLOR_BORDER, 2));
+            exitButton.setBackground(rounded(COLOR_INPUT, 12, COLOR_BORDER, 1));
             backButton = exitButton;
         } else {
             ImageButton arrowButton = new ImageButton(this);
+            arrowButton.setElevation(0f);
+            arrowButton.setStateListAnimator(null);
             arrowButton.setImageResource(R.drawable.ic_back_chevron);
             arrowButton.setScaleType(ImageView.ScaleType.CENTER);
             arrowButton.setPadding(0, 0, 0, 0);
-            arrowButton.setBackground(rounded(COLOR_INPUT, 12, COLOR_BORDER, 2));
+            arrowButton.setBackground(rounded(COLOR_INPUT, 12, COLOR_BORDER, 1));
             backButton = arrowButton;
         }
         backButton.setContentDescription(required ? "退出地图设置" : "返回首页");
@@ -135,7 +138,7 @@ public final class MapSettingsActivity extends Activity {
         LinearLayout bottomBar = new LinearLayout(this);
         bottomBar.setGravity(Gravity.CENTER_VERTICAL);
         bottomBar.setPadding(dp(18), dp(10), dp(18), dp(12));
-        bottomBar.setBackground(rounded(COLOR_CARD, 22, COLOR_BORDER, 2));
+        bottomBar.setBackground(rounded(COLOR_CARD, 22, COLOR_BORDER, 1));
         Button saveButton = actionButton("保存设置", COLOR_ACCENT, COLOR_TEXT, 16);
         saveButton.setContentDescription("保存地图设置");
         saveButton.setOnClickListener(view -> saveConfiguration());
@@ -190,7 +193,7 @@ public final class MapSettingsActivity extends Activity {
         providerHeader.setGravity(Gravity.CENTER_VERTICAL);
         TextView providerBadge = label("A", 22, Color.WHITE, Typeface.BOLD);
         providerBadge.setGravity(Gravity.CENTER);
-        providerBadge.setBackground(rounded(COLOR_BLUE, 14, COLOR_BORDER, 2));
+        providerBadge.setBackground(rounded(COLOR_BLUE, 14, Color.TRANSPARENT, 0));
         providerHeader.addView(providerBadge, new LinearLayout.LayoutParams(dp(48), dp(48)));
         LinearLayout providerTitles = new LinearLayout(this);
         providerTitles.setOrientation(LinearLayout.VERTICAL);
@@ -207,7 +210,7 @@ public final class MapSettingsActivity extends Activity {
         configured.setGravity(Gravity.CENTER);
         configured.setPadding(dp(10), 0, dp(10), 0);
         configured.setBackground(rounded(hasConfiguration() ? Color.rgb(226, 242, 245)
-                : Color.rgb(255, 238, 231), 12, COLOR_BORDER, 1));
+                : Color.rgb(252, 235, 228), 12, Color.TRANSPARENT, 0));
         providerHeader.addView(configured, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(32)));
         providerCard.addView(providerHeader);
@@ -242,6 +245,19 @@ public final class MapSettingsActivity extends Activity {
         actions.addView(disclaimerButton, disclaimerParams);
         body.addView(actions, wrapParams(dp(8)));
 
+        TextView licenseTitle = label("卡密与授权", 13, COLOR_TEAL, Typeface.BOLD);
+        body.addView(licenseTitle, wrapParams(dp(20)));
+        LinearLayout licenseCard = card();
+        licenseStatus = label("", 14, COLOR_TEXT, Typeface.BOLD);
+        licenseStatus.setLineSpacing(dp(2), 1f);
+        licenseCard.addView(licenseStatus);
+        Button licenseButton = actionButton("管理卡密", Color.rgb(226, 242, 245), COLOR_TEXT, 13);
+        licenseButton.setContentDescription("管理卡密与设备绑定");
+        licenseButton.setOnClickListener(view -> startActivity(new Intent(this, LicenseActivity.class)));
+        licenseCard.addView(licenseButton, fixedParams(dp(46), dp(10)));
+        body.addView(licenseCard, wrapParams(dp(8)));
+        refreshLicenseStatus();
+
         TextView updateTitle = label("关于与更新", 13, COLOR_TEAL, Typeface.BOLD);
         body.addView(updateTitle, wrapParams(dp(20)));
         LinearLayout updateCard = card();
@@ -262,6 +278,27 @@ public final class MapSettingsActivity extends Activity {
         body.addView(updateCard, wrapParams(dp(18)));
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        refreshLicenseStatus();
+    }
+
+    private void refreshLicenseStatus() {
+        if (licenseStatus == null) return;
+        LicenseManager.Access access = LicenseManager.getAccess(this);
+        if (access.license != null && access.license.valid) {
+            LicenseManager.Validation validation = access.license;
+            licenseStatus.setText((validation.trialCard ? "试用卡 · " : "已激活 · ")
+                    + LicenseManager.formatExpiry(validation.expiresAtSeconds)
+                    + "\n" + LicenseManager.featureSummary(validation));
+            licenseStatus.setTextColor(COLOR_TEAL);
+        } else {
+            licenseStatus.setText("需要卡密才能使用\n" + access.message);
+            licenseStatus.setTextColor(COLOR_SUBTLE);
+        }
+    }
+
     private boolean hasConfiguration() {
         return isValidKey(AmapKeyStore.getJsApiKey(this))
                 && isValidSecurity(AmapKeyStore.getJsSecurityCode(this));
@@ -277,7 +314,7 @@ public final class MapSettingsActivity extends Activity {
         field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         field.setSelectAllOnFocus(true);
         field.setPadding(dp(16), 0, dp(16), 0);
-        field.setBackground(rounded(COLOR_INPUT, 14, COLOR_BORDER, 2));
+        field.setBackground(rounded(COLOR_INPUT, 12, COLOR_BORDER, 1));
         return field;
     }
 
@@ -285,7 +322,11 @@ public final class MapSettingsActivity extends Activity {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(16), dp(16), dp(16), dp(16));
-        card.setBackground(rounded(COLOR_CARD, 18, COLOR_BORDER, 2));
+        card.setBackground(rounded(COLOR_CARD, 18, COLOR_BORDER, 0));
+        // Keep settings modules flat; the page uses crisp borders and paper
+        // surfaces, so elevation creates an unintended shadow.
+        card.setElevation(0f);
+        card.setStateListAnimator(null);
         return card;
     }
 
@@ -293,13 +334,15 @@ public final class MapSettingsActivity extends Activity {
         Button button = actionButton(text, COLOR_CARD, COLOR_TEXT, 13);
         button.setContentDescription(description);
         button.setCompoundDrawablePadding(dp(4));
-        button.setBackground(rounded(accent == COLOR_ORANGE ? Color.rgb(255, 238, 231)
-                : Color.rgb(226, 242, 245), 14, COLOR_BORDER, 2));
+        button.setBackground(rounded(accent == COLOR_ORANGE ? Color.rgb(252, 235, 228)
+                : Color.rgb(225, 242, 239), 14, Color.TRANSPARENT, 0));
         return button;
     }
 
     private Button actionButton(String text, int background, int foreground, float textSize) {
         Button button = new Button(this);
+        button.setElevation(0f);
+        button.setStateListAnimator(null);
         button.setText(text);
         button.setTextSize(textSize);
         button.setTextColor(foreground);
@@ -308,7 +351,9 @@ public final class MapSettingsActivity extends Activity {
         button.setMinHeight(0);
         button.setMinWidth(0);
         button.setPadding(dp(10), 0, dp(10), 0);
-        button.setBackground(rounded(background, 14, COLOR_BORDER, 2));
+        boolean primary = background == COLOR_ACCENT || background == COLOR_TEAL || background == COLOR_ORANGE;
+        button.setBackground(rounded(background, primary ? 16 : 13,
+                primary ? Color.TRANSPARENT : COLOR_BORDER, primary ? 0 : 1));
         return button;
     }
 
